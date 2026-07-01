@@ -383,6 +383,21 @@ services:
       start_period: 60s
     logging: *default-logging
 
+  kibana-init:
+    image: curlimages/curl:latest
+    container_name: datawave-kibana-init
+    restart: "no"
+    entrypoint: ["/bin/sh", "/kibana-init.sh"]
+    environment:
+      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_PASSWORD}
+    volumes:
+      - ./elasticsearch/kibana-init.sh:/kibana-init.sh:ro
+    networks:
+      - datawave-net
+    depends_on:
+      kibana:
+        condition: service_healthy
+
   # ── BI / SQL Interface (Apache Superset) ──────────────────────────────────────
   # Authenticates via Keycloak OIDC; passes logged-in username to Trino for RBAC.
 

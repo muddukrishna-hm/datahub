@@ -8,6 +8,14 @@ A SQL federation platform running locally via Docker Compose. **Trino** federate
 
 ---
 
+## Prerequisites
+
+- **Docker Desktop 4.x+** (Mac/Windows) or **Docker Engine 24+ with Compose v2** (Linux)
+- At least **8 GB RAM** allocated to Docker (Ranger + Elasticsearch are the heaviest services)
+- Ports 389, 5432, 3306, 6080, 8080, 8085, 8088, 8180, 8983, 9000, 9001, 9200, 19120, 5601 available
+
+---
+
 ## Quick Start
 
 ```bash
@@ -39,12 +47,13 @@ datawave-trino              healthy
 datawave-ranger-solr        healthy
 datawave-ranger             healthy
 datawave-ranger-sync        running
+datawave-phpldapadmin       running
 datawave-elasticsearch      healthy
 datawave-kibana             healthy
 datawave-superset           healthy
 ```
 
-Init containers (`datawave-minio-init`, `datawave-es-init`, `datawave-superset-init`) will show `Exited (0)` — that is expected and correct.
+Init containers (`datawave-minio-init`, `datawave-es-init`, `datawave-kibana-init`, `datawave-superset-init`) will show `Exited (0)` — that is expected and correct.
 
 If a service stays in `starting`, allow another 60 seconds and re-check. If a service shows `unhealthy` or `exited (non-zero)`, see [Troubleshooting](docs/troubleshooting.md).
 
