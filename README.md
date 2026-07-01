@@ -1,12 +1,10 @@
 # DataWave SQL Federation Platform
 
-A production-reference SQL federation stack built with **Trino**, **Apache Ranger**, **Keycloak SSO**, and **Elasticsearch audit** — all running locally via Docker Compose.
-
-Trino federates three data sources through a single SQL endpoint: a PostgreSQL logistics DB, a MySQL inventory DB, and an Apache Iceberg data lake on MinIO/S3. Access control is enforced via file-based RBAC with policies mirrored in Ranger. Every query is audited to Elasticsearch and visualised in Kibana. Metabase provides the BI layer, protected by Keycloak SSO via OAuth2 Proxy.
+A SQL federation platform running locally via Docker Compose. **Trino** federates three data sources — PostgreSQL (logistics), MySQL (inventory), and an Apache Iceberg data lake on MinIO/S3 — through a single SQL endpoint. **Apache Superset** is the BI and SQL interface; it passes the logged-in user's identity to Trino so **Apache Ranger** group policies enforce per-user access control. Every authorization decision is indexed in **Elasticsearch** for audit.
 
 ![DataWave SQL Federation Architecture](docs/datahub.png)
 
-**Docs:** [Architecture](docs/architecture.md) · [Prod Improvements](docs/prod-improvements.md) · [Troubleshooting](docs/troubleshooting.md)
+**Docs:** [Architecture](docs/architecture.md) · [User Management](docs/user-management.md) · [Prod Improvements](docs/prod-improvements.md) · [Troubleshooting](docs/troubleshooting.md)
 
 ---
 
@@ -15,11 +13,11 @@ Trino federates three data sources through a single SQL endpoint: a PostgreSQL l
 ```bash
 git clone <repository-url>
 cd datahub
-cp .env.example .env          # fill in real values before production use
-docker compose up -d
+cp .env.example .env          # edit values for non-local deployments
+docker compose up --build -d
 ```
 
-First boot downloads all images (~3–4 GB). Apache Ranger takes 2–3 minutes to initialise its database schema. **Total first-boot time: ~6–8 minutes.**
+`--build` is required on first run to build the Superset image with the Trino driver. Apache Ranger takes 2–3 minutes to initialise its database schema; Keycloak imports the realm on first boot (~60s). **Total first-boot time: ~7–10 minutes.**
 
 ### Confirm everything is healthy
 
@@ -30,76 +28,77 @@ docker compose ps
 All services should reach `healthy` or `running`:
 
 ```
-NAME                      STATUS
-datawave-trino            healthy
-datawave-postgres         healthy
-datawave-mysql            healthy
-datawave-minio            healthy
-datawave-nessie           healthy
-datawave-ranger           healthy
-datawave-keycloak         healthy
-datawave-metabase         healthy
-datawave-elasticsearch    healthy
-datawave-kibana           running
-datawave-nginx            running
+NAME                        STATUS
+datawave-postgres           healthy
+datawave-mysql              healthy
+datawave-minio              healthy
+datawave-nessie             healthy
+datawave-openldap           healthy
+datawave-keycloak           healthy
+datawave-trino              healthy
+datawave-ranger-solr        healthy
+datawave-ranger             healthy
+datawave-ranger-sync        running
+datawave-elasticsearch      healthy
+datawave-kibana             healthy
+datawave-superset           healthy
 ```
 
-If a service stays in `starting`, allow another 60 seconds and re-check. If a service shows `unhealthy` or `exited`, see [Troubleshooting](troubleshooting.md).
+Init containers (`datawave-minio-init`, `datawave-es-init`, `datawave-superset-init`) will show `Exited (0)` — that is expected and correct.
+
+If a service stays in `starting`, allow another 60 seconds and re-check. If a service shows `unhealthy` or `exited (non-zero)`, see [Troubleshooting](docs/troubleshooting.md).
 
 ---
 
 ## Accessing the Services
 
-All services sit behind **Nginx** at http://localhost/. Every path is SSO-protected: the first visit redirects to Keycloak, and a valid login grants a session cookie for the rest.
+Each service exposes its own port directly — no reverse proxy in front.
 
-All end-user services are routed through Nginx at http://localhost/ — no ports needed.
-
-| Service | URL | Username | Password |
+| Service | URL / Address | Username | Password |
 |---|---|---|---|
-| **Metabase** (BI + SQL) | http://localhost/ | `admin@datawave.io` | `METABASE_ADMIN_PASSWORD` in `.env` |
-| **Apache Ranger** | http://localhost/ranger/ | `admin` | `RANGER_ADMIN_PASSWORD` in `.env` |
-| **Trino UI** | http://localhost/trino/ | any | _(no password — see [Design Decisions](#design-decisions--limitations))_ |
-| **MinIO Console** | http://localhost/minio/ | `minioadmin` | `MINIO_ROOT_PASSWORD` in `.env` |
-| **Kibana** | http://localhost/kibana/ | `elastic` | `ELASTICSEARCH_PASSWORD` in `.env` |
+| **Superset** (BI + SQL) | http://localhost:8088 | via Keycloak | see below |
+| **Keycloak** (SSO) | http://localhost:8180 | `admin` | `KEYCLOAK_ADMIN_PASSWORD` in `.env` |
+| **Apache Ranger** | http://localhost:6080 | `admin` | `RANGER_ADMIN_PASSWORD` in `.env` |
+| **Trino UI** | http://localhost:8080/ui/ | any | _(no password)_ |
+| **phpLDAPadmin** (user mgmt) | http://localhost:8085 | `cn=admin,dc=datawave,dc=io` | `LDAP_ADMIN_PASSWORD` in `.env` |
+| **Kibana** (audit) | http://localhost:5601 | `elastic` | `ELASTICSEARCH_PASSWORD` in `.env` |
+| **MinIO Console** | http://localhost:9001 | `minioadmin` | `MINIO_ROOT_PASSWORD` in `.env` |
+| **Elasticsearch** | http://localhost:9200 | `elastic` | `ELASTICSEARCH_PASSWORD` in `.env` |
 
-**Keycloak Admin is the one exception** — it is accessed directly at **http://localhost:8180/** (`admin` / `KEYCLOAK_ADMIN_PASSWORD` in `.env`). Routing Keycloak behind a Nginx subpath requires changing its root path configuration (`KC_HTTP_RELATIVE_PATH`), which propagates to every OIDC discovery endpoint and breaks the oauth2-proxy SSO flow. Keeping it on port 8180 avoids that coupling. In production, Keycloak would sit behind a dedicated hostname (e.g., `auth.datawave.io`) rather than a subpath.
+All credentials are in `.env` at the project root.
 
-All credentials are in `.env` at the project root. To read one:
-```bash
-grep ELASTICSEARCH_PASSWORD .env
-```
+### Logging into Superset
 
-### Pre-configured Keycloak users
+Superset uses Keycloak OIDC for authentication. Click the **Sign in with Keycloak** button on the Superset login page and use one of these LDAP users:
 
-| Username | Password | Trino group |
-|---|---|---|
-| `analyst` | `analyst123` | `data-analyst` |
-| `engineer` | `engineer123` | `data-engineer` |
-| `admin` | `admin123` | `data-admin` |
+| Username | Password | Trino group | Access level |
+|---|---|---|---|
+| `admin` | `admin123` | `data-admin` | Full access; automatically gets Superset Admin role |
+| `analyst` | `analyst123` | `data-analyst` | SELECT only, `credit_card` masked |
+| `engineer` | `engineer123` | `data-engineer` | SELECT + DML |
+
+Keycloak is at **http://localhost:8180** (admin panel — log in with `KEYCLOAK_ADMIN_PASSWORD`). Users are provisioned from OpenLDAP. Superset passes the Keycloak `preferred_username` to Trino via `impersonate_user`, so each user gets their own RBAC enforced by `rules.json`.
 
 ---
 
 ## Design Decisions & Limitations
 
-- **Double login (Keycloak + Metabase)** — OAuth2 Proxy and Metabase maintain independent sessions; Metabase OSS cannot consume the Keycloak token. → [prod-improvements.md#metabase-sso](prod-improvements.md#4-metabase-sso-single-sign-on)
-- **Trino has no authentication** — Trino requires TLS before any auth method can be enabled; skipped here to avoid certificate friction on localhost. Access control rules are enforced; identity is not verified. → [prod-improvements.md#trino-auth](prod-improvements.md#1-trino-authentication)
-- **Credentials committed to the repo** — Dev defaults in `.env.example` so the stack starts with one command; `.env` is gitignored and must never hold real values in production. → [prod-improvements.md#security-hardening](prod-improvements.md#security-hardening-additional)
-- **No per-user RBAC through Metabase** — Metabase OSS sends all queries as the single service account (`admin`); identity passthrough to Trino requires Metabase Pro. RBAC is fully demonstrable via the [Trino CLI](#rbac--demonstrating-access-control-via-trino-cli). → [prod-improvements.md#metabase-sso](prod-improvements.md#4-metabase-sso-single-sign-on)
-- **Ranger policies are not enforced at query time** — Ranger 2.8.0 doesn't publish a pre-built Trino plugin binary; building it from source adds ~15 min and 500 MB to the image build for a dev exercise. Ranger serves as the policy management UI; `rules.json` does the actual enforcement. → [prod-improvements.md#ranger](prod-improvements.md#3-ranger-policy-sync-for-trino)
-- **Keycloak is not behind Nginx** — Routing Keycloak under a subpath requires `KC_HTTP_RELATIVE_PATH`, which changes all OIDC discovery endpoints and breaks OAuth2 Proxy. Kept on port `8180` as a deliberate exception.
+- **Trino has no authentication** — Trino requires TLS before any auth method can be enabled; skipped here to avoid certificate friction on localhost. Identity flows from Superset via user impersonation; the Trino endpoint itself is unauthenticated. → [prod-improvements.md](docs/prod-improvements.md)
+- **Ranger enforces policies via sync, not native plugin** — The Ranger-Trino authorizer plugin binary is not pre-built for Ranger 2.8.0. Instead, the `ranger-sync` container polls the Ranger REST API every 30 seconds, converts policies to Trino's `rules.json` format, and writes to a shared volume. Trino hot-reloads the file automatically. Column masking policies defined in Ranger are not yet synced (sync.py covers access policies only). → [prod-improvements.md](docs/prod-improvements.md)
+- **Credentials in `.env.example`** — Dev defaults so the stack starts with one command; `.env` is gitignored and must never hold real values in production.
+- **Split Keycloak URLs** — The Superset OIDC client uses `http://keycloak:8080` for server-side token exchange and `http://localhost:8180` for browser redirects. This is required because the Keycloak container is not reachable at `localhost` from inside Docker. In production, a shared hostname with TLS resolves this.
+- **LDAP_ADMIN_PASSWORD and SUPERSET_OIDC_SECRET are hardcoded in the Keycloak realm JSON** — Keycloak does not support environment variable substitution in imported realm files. If you change these values in `.env`, you must also update `keycloak/datawave-realm.json` and delete the `keycloak_data` volume so the realm is re-imported.
 
 ---
 
-## Running Queries in Metabase
+## Running Queries in Superset
 
-> **Note:** Accessing http://localhost/ requires two logins — first Keycloak (`admin` / `admin123`), then Metabase (`admin@datawave.io` / `METABASE_ADMIN_PASSWORD` from `.env`). See [limitation 1](#1-double-login--keycloak-then-metabase) above.
+1. Open **http://localhost:8088** — click **Sign in with Keycloak** and log in with one of the LDAP users above.
+2. Click **SQL → SQL Lab** in the top navigation.
+3. In the **Database** dropdown, choose **DataWave Federation** — the pre-configured Trino connection.
+4. Write a query and press **Run** (Ctrl+Enter / Cmd+Enter).
 
-1. Open **http://localhost/** and complete both logins.
-2. Click **New → SQL query**.
-3. In the **database selector** (top-left of the SQL editor), choose **DataWave Federation** — the pre-configured Trino connection.
-4. Write a query and press **Run** (Shift+Enter).
-
-> Metabase's SQL editor does not accept a trailing semicolon. Write `SHOW CATALOGS`, not `SHOW CATALOGS;`. Semicolons are only required in the Trino CLI.
+Superset passes your Keycloak username to Trino transparently — queries run as `analyst`, `engineer`, or `admin` depending on who is logged in, and RBAC is enforced accordingly.
 
 ---
 
@@ -258,7 +257,7 @@ Replace `analyst` with `engineer` or `admin` to query as a different identity.
 
 ### Trino Web UI
 
-Open **http://localhost/trino/** — enter any username (no password). Shows live query history, node status, and resource usage.
+Open **http://localhost:8080/ui/** — enter any username (no password). Shows live query history, node status, and resource usage.
 
 ### JDBC (DBeaver, DataGrip, IntelliJ)
 
@@ -273,7 +272,7 @@ Open **http://localhost/trino/** — enter any username (no password). Shows liv
 
 ## RBAC — Demonstrating Access Control via Trino CLI
 
-Trino enforces per-user access control through a file-based group provider (`groups.txt`) and access rules (`rules.json`). The same policies are mirrored in Ranger (visible at http://localhost/ranger/) via the `ranger-init` container. Pass a username with `--user` to query as that identity.
+Trino enforces per-user access control through a file-based group provider (`groups.txt`) and access rules (`rules.json`). Policies are managed in Ranger (http://localhost:6080) and synced to Trino every 30 seconds by the `ranger-sync` container. Pass a username with `--user` to query as that identity.
 
 | Identity | Catalogs visible | Table access | `credit_card` column |
 |---|---|---|---|
@@ -325,8 +324,8 @@ Expected: `iceberg`, `mysql`, `postgresql`, `system`, `tpch` — including `syst
 
 ## Audit Trail (Kibana)
 
-1. Open **http://localhost/kibana/** — sign in (`elastic` / `ELASTICSEARCH_PASSWORD` from `.env`).
-2. Click **Discover** — the `Trino Query Audit` data view is created automatically on first boot.
+1. Open **http://localhost:5601** — sign in (`elastic` / `ELASTICSEARCH_PASSWORD` from `.env`).
+2. Navigate to **Discover** — create a data view for the `trino-query-audit*` index.
 3. Every Trino query appears with `principal` (who ran it), `query` (the SQL), `@timestamp`, and `errorCode`.
 
 Useful KQL filters in the search bar:
@@ -372,26 +371,9 @@ The catalog appears immediately in `SHOW CATALOGS`.
 
 ## Managing Users
 
-### Add a user via Keycloak UI
+Users are sourced from **OpenLDAP** — Keycloak federates them automatically. Adding a user via Keycloak UI alone will not give them Trino group membership or RBAC access.
 
-1. Open **http://localhost:8180** (Keycloak admin — direct port, not through Nginx) and log in.
-2. Select the **datawave** realm from the dropdown.
-3. **Users → Add user** — set username, email → **Create**.
-4. **Credentials** tab → set a password (uncheck *Temporary*).
-5. The user can immediately sign in at http://localhost/.
-
-### Add a user via CLI
-
-```bash
-docker exec -it datawave-keycloak /opt/keycloak/bin/kcadm.sh \
-  config credentials \
-  --server http://localhost:8080 --realm master \
-  --user admin --password "$(grep KEYCLOAK_ADMIN_PASSWORD .env | cut -d= -f2)"
-
-docker exec -it datawave-keycloak /opt/keycloak/bin/kcadm.sh \
-  create users --target-realm datawave \
-  -s username=newanalyst -s email=newanalyst@datawave.io -s enabled=true
-```
+See **[docs/user-management.md](docs/user-management.md)** for the complete guide: adding users, removing users, changing roles, and modifying Ranger policies.
 
 ---
 

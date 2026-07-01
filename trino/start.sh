@@ -4,7 +4,6 @@ set -e
 mkdir -p /etc/trino
 cp -r /etc/trino-source/. /etc/trino/
 
-# Build the ES Basic-auth header at runtime so the password stays out of config files
 ES_AUTH=$(printf 'elastic:%s' "$ELASTICSEARCH_PASSWORD" | base64 | tr -d '\n')
 cat > /etc/trino/event-listener.properties << EOF
 event-listener.name=http

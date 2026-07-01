@@ -1,0 +1,9 @@
+databases:
+  - database_name: DataWave Federation
+    sqlalchemy_uri: trino://admin@trino:8080
+    impersonate_user: true
+    expose_in_sqllab: true
+    allow_run_async: false
+    allow_dml: true
+    allow_csv_upload: false
+    extra: "{}"

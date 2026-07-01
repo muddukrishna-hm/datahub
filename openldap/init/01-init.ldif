@@ -1,0 +1,58 @@
+# OUs — base dc=datawave,dc=io is auto-created by bitnami/openldap
+
+dn: ou=users,dc=datawave,dc=io
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=datawave,dc=io
+objectClass: organizationalUnit
+ou: groups
+
+# ── Users ─────────────────────────────────────────────────────────────────────
+
+dn: uid=analyst,ou=users,dc=datawave,dc=io
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+uid: analyst
+cn: Data Analyst
+sn: Analyst
+mail: analyst@datawave.io
+userPassword: analyst123
+
+dn: uid=engineer,ou=users,dc=datawave,dc=io
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+uid: engineer
+cn: Data Engineer
+sn: Engineer
+mail: engineer@datawave.io
+userPassword: engineer123
+
+dn: uid=admin,ou=users,dc=datawave,dc=io
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+uid: admin
+cn: DataWave Admin
+sn: Admin
+mail: admin@datawave.io
+userPassword: admin123
+
+# ── Groups ────────────────────────────────────────────────────────────────────
+
+dn: cn=data-analyst,ou=groups,dc=datawave,dc=io
+objectClass: groupOfNames
+cn: data-analyst
+member: uid=analyst,ou=users,dc=datawave,dc=io
+
+dn: cn=data-engineer,ou=groups,dc=datawave,dc=io
+objectClass: groupOfNames
+cn: data-engineer
+member: uid=engineer,ou=users,dc=datawave,dc=io
+
+dn: cn=data-admin,ou=groups,dc=datawave,dc=io
+objectClass: groupOfNames
+cn: data-admin
+member: uid=admin,ou=users,dc=datawave,dc=io

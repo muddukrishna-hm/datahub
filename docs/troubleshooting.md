@@ -235,7 +235,7 @@ docker compose up -d ranger-db ranger-solr ranger
 
 ### Ranger policies not taking effect
 
-**Note:** In the current implementation, Trino uses file-based access control (`trino/etc/rules.json`), not the Ranger plugin. Ranger policies are visible in the UI and logged to the audit trail but do not enforce per-query at the Trino level. See [`prod-improvements.md`](prod-improvements.md#ranger-policy-sync-for-trino) for the full Ranger-Trino plugin implementation.
+**Note:** In the current implementation, Trino uses file-based access control (`trino/etc/rules.json`), not the Ranger plugin. Ranger policies are visible in the UI and logged to the audit trail but do not enforce per-query at the Trino level. See [`prod-improvements.md`](prod-improvements.md#3-ranger-policy-sync) for the full Ranger-Trino plugin implementation.
 
 ---
 
@@ -375,7 +375,7 @@ docker volume rm datawave-sql-federation_keycloak_db_data
 docker compose up -d keycloak-db keycloak
 ```
 
-This wipes all manual Keycloak UI changes. Export the realm first if needed (see [`prod-improvements.md`](prod-improvements.md#keycloak-realm-export-automation)).
+This wipes all manual Keycloak UI changes. Export the realm first if needed (see [`prod-improvements.md`](prod-improvements.md#8-keycloak-realm-export)).
 
 ---
 

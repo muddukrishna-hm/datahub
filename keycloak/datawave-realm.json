@@ -1,121 +1,137 @@
 {
   "realm": "datawave",
-  "displayName": "DataWave Industries",
   "enabled": true,
   "sslRequired": "none",
   "registrationAllowed": false,
   "loginWithEmailAllowed": true,
-  "duplicateEmailsAllowed": false,
-  "resetPasswordAllowed": true,
-  "editUsernameAllowed": false,
-  "bruteForceProtected": false,
-
   "clients": [
     {
-      "clientId": "datawave-app",
-      "name": "DataWave Analytics Portal",
-      "description": "OAuth2/OIDC client for the DataWave Metabase + OAuth2 Proxy",
+      "clientId": "superset",
+      "name": "Apache Superset",
       "enabled": true,
       "publicClient": false,
-      "secret": "datawave-secret-32chars-long-ok",
+      "secret": "superset-client-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
       "redirectUris": [
-        "http://localhost/oauth2/callback",
-        "http://localhost:4180/oauth2/callback",
-        "http://localhost:3000/*"
+        "http://localhost:8088/oauth-authorized/keycloak",
+        "http://localhost:8088/*"
       ],
-      "webOrigins": ["http://localhost", "http://localhost:3000"],
-      "standardFlowEnabled": true,
-      "implicitFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
-      "serviceAccountsEnabled": false,
-      "protocol": "openid-connect",
-      "fullScopeAllowed": true,
-      "defaultClientScopes": ["openid", "profile", "email", "roles"],
-      "optionalClientScopes": ["address", "phone"],
-      "protocolMappers": [
-        {
-          "name": "audience",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "consentRequired": false,
-          "config": {
-            "included.client.audience": "datawave-app",
-            "id.token.claim": "true",
-            "access.token.claim": "true"
-          }
+      "webOrigins": ["http://localhost:8088"],
+      "protocol": "openid-connect"
+    }
+  ],
+  "components": {
+    "org.keycloak.storage.UserStorageProvider": [
+      {
+        "id": "openldap-provider",
+        "name": "openldap",
+        "providerId": "ldap",
+        "subType": "readonly",
+        "subComponents": {
+          "org.keycloak.storage.ldap.mappers.LDAPStorageMapper": [
+            {
+              "id": "username-mapper",
+              "name": "username",
+              "providerId": "user-attribute-ldap-mapper",
+              "subType": "openldap-provider",
+              "subComponents": {},
+              "config": {
+                "ldap.attribute":              ["uid"],
+                "user.model.attribute":        ["username"],
+                "is.mandatory.in.ldap":        ["true"],
+                "read.only":                   ["true"],
+                "always.read.value.from.ldap": ["false"]
+              }
+            },
+            {
+              "id": "first-name-mapper",
+              "name": "first name",
+              "providerId": "user-attribute-ldap-mapper",
+              "subType": "openldap-provider",
+              "subComponents": {},
+              "config": {
+                "ldap.attribute":              ["cn"],
+                "user.model.attribute":        ["firstName"],
+                "is.mandatory.in.ldap":        ["true"],
+                "read.only":                   ["true"],
+                "always.read.value.from.ldap": ["false"]
+              }
+            },
+            {
+              "id": "last-name-mapper",
+              "name": "last name",
+              "providerId": "user-attribute-ldap-mapper",
+              "subType": "openldap-provider",
+              "subComponents": {},
+              "config": {
+                "ldap.attribute":              ["sn"],
+                "user.model.attribute":        ["lastName"],
+                "is.mandatory.in.ldap":        ["true"],
+                "read.only":                   ["true"],
+                "always.read.value.from.ldap": ["false"]
+              }
+            },
+            {
+              "id": "email-mapper",
+              "name": "email",
+              "providerId": "user-attribute-ldap-mapper",
+              "subType": "openldap-provider",
+              "subComponents": {},
+              "config": {
+                "ldap.attribute":              ["mail"],
+                "user.model.attribute":        ["email"],
+                "is.mandatory.in.ldap":        ["false"],
+                "read.only":                   ["true"],
+                "always.read.value.from.ldap": ["false"]
+              }
+            },
+            {
+              "id": "creation-date-mapper",
+              "name": "creation date",
+              "providerId": "user-attribute-ldap-mapper",
+              "subType": "openldap-provider",
+              "subComponents": {},
+              "config": {
+                "ldap.attribute":              ["createTimestamp"],
+                "user.model.attribute":        ["createTimestamp"],
+                "is.mandatory.in.ldap":        ["false"],
+                "read.only":                   ["true"],
+                "always.read.value.from.ldap": ["true"]
+              }
+            }
+          ]
+        },
+        "config": {
+          "enabled":                    ["true"],
+          "priority":                   ["0"],
+          "editMode":                   ["READ_ONLY"],
+          "importEnabled":              ["true"],
+          "syncRegistrations":          ["false"],
+          "fullSyncPeriod":             ["-1"],
+          "changedSyncPeriod":          ["-1"],
+          "cachePolicy":                ["DEFAULT"],
+          "batchSizeForSync":           ["1000"],
+          "vendor":                     ["other"],
+          "connectionUrl":              ["ldap://openldap:389"],
+          "bindDn":                     ["cn=admin,dc=datawave,dc=io"],
+          "bindCredential":             ["adminpassword"],
+          "authType":                   ["simple"],
+          "usersDn":                    ["ou=users,dc=datawave,dc=io"],
+          "usernameLDAPAttribute":      ["uid"],
+          "rdnLDAPAttribute":           ["uid"],
+          "uuidLDAPAttribute":          ["entryUUID"],
+          "userObjectClasses":          ["inetOrgPerson"],
+          "searchScope":                ["1"],
+          "tls":                        ["false"],
+          "pagination":                 ["true"],
+          "connectionTimeout":          ["5000"],
+          "readTimeout":                ["10000"],
+          "referral":                   ["ignore"],
+          "trustEmail":                 ["true"],
+          "allowKerberosAuthentication":["false"]
         }
-      ]
-    },
-    {
-      "clientId": "trino-cli",
-      "name": "Trino CLI / API",
-      "description": "OAuth2 client for authenticating Trino CLI users",
-      "enabled": true,
-      "publicClient": true,
-      "redirectUris": ["http://localhost:8080/*"],
-      "standardFlowEnabled": true,
-      "implicitFlowEnabled": false,
-      "directAccessGrantsEnabled": true,
-      "protocol": "openid-connect",
-      "fullScopeAllowed": true
-    }
-  ],
-
-  "roles": {
-    "realm": [
-      { "name": "data-analyst",   "description": "Can run SELECT queries on all catalogs" },
-      { "name": "data-engineer",  "description": "Can create/alter Iceberg tables" },
-      { "name": "data-admin",     "description": "Full access to all catalogs and Ranger admin" }
+      }
     ]
-  },
-
-  "users": [
-    {
-      "username": "analyst",
-      "email": "analyst@datawave.io",
-      "firstName": "Alice",
-      "lastName": "Analyst",
-      "enabled": true,
-      "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "analyst123", "temporary": false }],
-      "realmRoles": ["data-analyst"]
-    },
-    {
-      "username": "engineer",
-      "email": "engineer@datawave.io",
-      "firstName": "Bob",
-      "lastName": "Engineer",
-      "enabled": true,
-      "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "engineer123", "temporary": false }],
-      "realmRoles": ["data-analyst", "data-engineer"]
-    },
-    {
-      "username": "admin",
-      "email": "admin@datawave.io",
-      "firstName": "Carol",
-      "lastName": "Admin",
-      "enabled": true,
-      "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "admin123", "temporary": false }],
-      "realmRoles": ["data-analyst", "data-engineer", "data-admin"]
-    },
-    {
-      "username": "krishna",
-      "email": "muddukrishnahm@gmail.com",
-      "firstName": "Krishna",
-      "lastName": "Muddu",
-      "enabled": true,
-      "emailVerified": true,
-      "credentials": [{ "type": "password", "value": "krishna123", "temporary": false }],
-      "realmRoles": ["data-analyst", "data-engineer", "data-admin"]
-    }
-  ],
-
-  "scopeMappings": [
-    {
-      "client": "datawave-app",
-      "roles": ["data-analyst", "data-engineer", "data-admin"]
-    }
-  ]
+  }
 }

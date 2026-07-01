@@ -8,7 +8,7 @@ x-logging: &default-logging
 
 services:
 
-  # ── Data Sources ─────────────────────────────────────────────────────────────
+  # ── Data Sources ──────────────────────────────────────────────────────────────
 
   postgres:
     image: postgres:15
@@ -18,6 +18,7 @@ services:
       POSTGRES_USER: datawave
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: logistics
+      RANGER_DB_PASSWORD: ${RANGER_DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d
@@ -55,7 +56,7 @@ services:
       retries: 5
     logging: *default-logging
 
-  # ── Object Storage (MinIO / S3-compatible) ────────────────────────────────────
+  # ── Object Storage + Iceberg ──────────────────────────────────────────────────
 
   minio:
     image: minio/minio:latest
@@ -65,8 +66,6 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_BROWSER_REDIRECT_URL: http://localhost/minio
-      MINIO_CONSOLE_SUBPATH: /minio
     volumes:
       - minio_data:/data
     ports:
@@ -84,6 +83,7 @@ services:
   minio-init:
     image: minio/mc:latest
     container_name: datawave-minio-init
+    restart: "no"
     depends_on:
       minio:
         condition: service_healthy
@@ -95,9 +95,6 @@ services:
       - ./minio/init.sh:/init.sh:ro
     networks:
       - datawave-net
-    restart: "no"
-
-  # ── Iceberg REST Catalog (Nessie) ─────────────────────────────────────────────
 
   nessie:
     image: projectnessie/nessie:latest
@@ -118,7 +115,91 @@ services:
       start_period: 30s
     logging: *default-logging
 
+  # ── User Directory (OpenLDAP) ─────────────────────────────────────────────────
+
+  openldap:
+    image: osixia/openldap:1.5.0
+    container_name: datawave-openldap
+    restart: unless-stopped
+    command: --copy-service
+    environment:
+      LDAP_ORGANISATION: DataWave
+      LDAP_DOMAIN: datawave.io
+      LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD}
+      LDAP_TLS: "false"
+    volumes:
+      - ./openldap/init:/container/service/slapd/assets/config/bootstrap/ldif/custom:ro
+      - openldap_data:/var/lib/ldap
+      - openldap_config:/etc/ldap/slapd.d
+    ports:
+      - "389:389"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost:389 -b '' -s base '(objectClass=*)' namingContexts 2>/dev/null | grep -q datawave"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  # ── SSO Identity Provider (Keycloak) ─────────────────────────────────────────
+  # H2 embedded DB (start-dev); no separate keycloak-db required.
+  # Realm is imported from keycloak/datawave-realm.json at first boot.
+  # Browser-facing port: 8180 → internal: 8080.
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: datawave-keycloak
+    restart: unless-stopped
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_HTTP_PORT: "8080"
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_PORT: "8180"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_BACKCHANNEL: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak/datawave-realm.json:/opt/keycloak/data/import/datawave-realm.json:ro
+      - keycloak_data:/opt/keycloak/data
+    ports:
+      - "8180:8080"
+    networks:
+      - datawave-net
+    depends_on:
+      openldap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && echo -ne \"GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && cat <&3 | grep -q UP' 2>/dev/null"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+
+  phpldapadmin:
+    image: osixia/phpldapadmin:0.9.0
+    container_name: datawave-phpldapadmin
+    restart: unless-stopped
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: openldap
+      PHPLDAPADMIN_HTTPS: "false"
+    ports:
+      - "8085:80"
+    networks:
+      - datawave-net
+    depends_on:
+      openldap:
+        condition: service_healthy
+    logging: *default-logging
+
   # ── SQL Federation Engine (Trino) ─────────────────────────────────────────────
+  # start.sh copies config from /etc/trino-source and generates event-listener.properties
+  # at startup so the Elasticsearch auth header can be injected from the env.
 
   trino:
     image: trinodb/trino:458
@@ -141,11 +222,12 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
-      ranger-init:
-        condition: service_completed_successfully
+      ranger-sync:
+        condition: service_started
     volumes:
       - ./trino/etc:/etc/trino-source:ro
       - ./trino/start.sh:/start.sh:ro
+      - ranger_sync:/etc/ranger-sync
     ports:
       - "8080:8080"
     networks:
@@ -159,25 +241,8 @@ services:
     logging: *default-logging
 
   # ── Authorization Engine (Apache Ranger) ──────────────────────────────────────
-
-  ranger-db:
-    image: postgres:15
-    container_name: datawave-ranger-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${RANGER_DB_PASSWORD}
-      POSTGRES_DB: ranger
-    volumes:
-      - ranger_db_data:/var/lib/postgresql/data
-    networks:
-      - datawave-net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d ranger"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    logging: *default-logging
+  # Ranger uses the shared postgres instance (separate 'ranger' database).
+  # Policy enforcement is file-based (rules.json); Ranger serves as the policy UI.
 
   ranger-solr:
     image: apache/ranger-solr:2.8.0
@@ -205,12 +270,16 @@ services:
       - ./ranger/scripts/entrypoint.sh:/entrypoint.sh:ro
     environment:
       RANGER_DB_TYPE: postgres
+      RANGER_DB_HOST: postgres
+      RANGER_DB_PORT: "5432"
+      RANGER_DB_NAME: ranger
       RANGER_DB_USER: rangeradmin
       RANGER_DB_PASSWORD: ${RANGER_DB_PASSWORD}
-      POSTGRES_PASSWORD: ${RANGER_DB_PASSWORD}
+      POSTGRES_SUPERUSER: datawave
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       RANGER_ADMIN_PASSWORD: ${RANGER_ADMIN_PASSWORD}
     depends_on:
-      ranger-db:
+      postgres:
         condition: service_healthy
       ranger-solr:
         condition: service_healthy
@@ -226,143 +295,28 @@ services:
       start_period: 180s
     logging: *default-logging
 
-  ranger-init:
-    image: curlimages/curl:latest
-    container_name: datawave-ranger-init
-    restart: "no"
-    depends_on:
-      ranger:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "/scripts/ranger-init.sh"]
+  # ── Ranger → Trino Policy Sync ───────────────────────────────────────────────
+  # Polls Ranger REST API every 30s, converts policies → rules.json on the
+  # ranger_sync volume. Trino reloads the file automatically (refresh-period=30s).
+
+  ranger-sync:
+    build: ./ranger/sync
+    container_name: datawave-ranger-sync
+    restart: unless-stopped
     environment:
-      RANGER_ADMIN_PASSWORD: ${RANGER_ADMIN_PASSWORD}
       RANGER_URL: http://ranger:6080
+      RANGER_USER: admin
+      RANGER_PASS: ${RANGER_ADMIN_PASSWORD}
+      RANGER_SERVICE: datawave_trino
+      OUTPUT_FILE: /sync/rules.json
+      SYNC_INTERVAL: "30"
     volumes:
-      - ./ranger/scripts:/scripts:ro
+      - ranger_sync:/sync
     networks:
       - datawave-net
     logging: *default-logging
 
-  # ── SSO / Identity Provider (Keycloak) ────────────────────────────────────────
-
-  keycloak-db:
-    image: postgres:15
-    container_name: datawave-keycloak-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: keycloak
-      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
-      POSTGRES_DB: keycloak
-    volumes:
-      - keycloak_db_data:/var/lib/postgresql/data
-    networks:
-      - datawave-net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    logging: *default-logging
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:24.0
-    container_name: datawave-keycloak
-    restart: unless-stopped
-    command: ["start-dev", "--import-realm"]
-    depends_on:
-      keycloak-db:
-        condition: service_healthy
-    environment:
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
-      KC_DB_USERNAME: keycloak
-      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
-      KC_HOSTNAME: localhost
-      KC_HOSTNAME_PORT: "8180"
-      KC_HOSTNAME_STRICT: "false"
-      KC_HTTP_ENABLED: "true"
-      KC_HEALTH_ENABLED: "true"
-    volumes:
-      - ./keycloak:/opt/keycloak/data/import:ro
-    ports:
-      - "8180:8080"
-    networks:
-      - datawave-net
-    healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"]
-      interval: 30s
-      timeout: 15s
-      retries: 10
-      start_period: 90s
-    logging: *default-logging
-
-  # ── BI / Analytics Tool (Metabase) ────────────────────────────────────────────
-
-  metabase-db:
-    image: postgres:15
-    container_name: datawave-metabase-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: metabase
-      POSTGRES_PASSWORD: ${METABASE_DB_PASSWORD}
-      POSTGRES_DB: metabase
-    volumes:
-      - metabase_db_data:/var/lib/postgresql/data
-    networks:
-      - datawave-net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U metabase -d metabase"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    logging: *default-logging
-
-  metabase:
-    image: metabase/metabase:latest
-    container_name: datawave-metabase
-    restart: unless-stopped
-    depends_on:
-      metabase-db:
-        condition: service_healthy
-      trino:
-        condition: service_healthy
-    environment:
-      MB_DB_TYPE: postgres
-      MB_DB_DBNAME: metabase
-      MB_DB_PORT: 5432
-      MB_DB_USER: metabase
-      MB_DB_HOST: metabase-db
-      MB_DB_PASS: ${METABASE_DB_PASSWORD}
-    ports:
-      - "3000:3000"
-    networks:
-      - datawave-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 15s
-      retries: 10
-      start_period: 120s
-    logging: *default-logging
-
-  metabase-init:
-    image: curlimages/curl:latest
-    container_name: datawave-metabase-init
-    restart: "no"
-    entrypoint: ["/bin/sh", "/init.sh"]
-    depends_on:
-      metabase:
-        condition: service_healthy
-    environment:
-      MB_ADMIN_PASSWORD: ${METABASE_ADMIN_PASSWORD}
-    volumes:
-      - ./metabase/init.sh:/init.sh:ro
-    networks:
-      - datawave-net
-
-  # ── Audit & Observability (Elasticsearch + Kibana) ────────────────────────────
+  # ── Audit Store (Elasticsearch + Kibana) ──────────────────────────────────────
 
   elasticsearch:
     image: elasticsearch:8.13.0
@@ -379,7 +333,6 @@ services:
       - ./elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
     ports:
       - "9200:9200"
-      - "9300:9300"
     networks:
       - datawave-net
     healthcheck:
@@ -393,117 +346,93 @@ services:
   es-init:
     image: curlimages/curl:latest
     container_name: datawave-es-init
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "/init.sh"]
+    restart: "no"
+    entrypoint: ["/bin/sh", "/es-init.sh"]
     environment:
       ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_PASSWORD}
     volumes:
-      - ./elasticsearch/set-kibana-password.sh:/init.sh:ro
+      - ./elasticsearch/es-init.sh:/es-init.sh:ro
     networks:
       - datawave-net
-    restart: "no"
-    logging: *default-logging
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
 
   kibana:
     image: kibana:8.13.0
     container_name: datawave-kibana
     restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_PASSWORD}
+    ports:
+      - "5601:5601"
+    networks:
+      - datawave-net
     depends_on:
       elasticsearch:
         condition: service_healthy
       es-init:
         condition: service_completed_successfully
-    environment:
-      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
-      ELASTICSEARCH_USERNAME: kibana_system
-      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_PASSWORD}
-      SERVER_BASEPATH: /kibana
-      SERVER_REWRITEBASEPATH: "true"
-      SERVER_PUBLICBASEURL: http://localhost/kibana
-    ports:
-      - "5601:5601"
-    networks:
-      - datawave-net
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf -u elastic:$$ELASTICSEARCH_PASSWORD http://localhost:5601/kibana/api/status | grep -q '\"level\":\"available\"'"]
-      interval: 15s
-      timeout: 10s
+      test: ["CMD", "curl", "-f", "http://localhost:5601/api/status"]
+      interval: 30s
+      timeout: 15s
       retries: 10
       start_period: 60s
     logging: *default-logging
 
-  kibana-init:
-    image: curlimages/curl:latest
-    container_name: datawave-kibana-init
+  # ── BI / SQL Interface (Apache Superset) ──────────────────────────────────────
+  # Authenticates via Keycloak OIDC; passes logged-in username to Trino for RBAC.
+
+  superset-init:
+    build: ./superset
+    container_name: datawave-superset-init
     restart: "no"
     entrypoint: ["/bin/sh", "/init.sh"]
     environment:
-      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_PASSWORD}
-    depends_on:
-      kibana:
-        condition: service_healthy
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+      SUPERSET_OIDC_SECRET: ${SUPERSET_OIDC_SECRET}
+      PYTHONPATH: /app/pythonpath
     volumes:
-      - ./elasticsearch/kibana-init.sh:/init.sh:ro
-    networks:
-      - datawave-net
-
-  # ── SSO Gateway (OAuth2-Proxy) ─────────────────────────────────────────────────
-
-  oauth2-proxy:
-    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0-alpine
-    container_name: datawave-oauth2-proxy
-    restart: unless-stopped
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        exec /bin/oauth2-proxy \
-          --provider=keycloak-oidc \
-          --client-id=datawave-app \
-          --client-secret=$$OAUTH2_CLIENT_SECRET \
-          --skip-oidc-discovery=true \
-          --oidc-issuer-url=http://localhost:8180/realms/datawave \
-          --login-url=http://localhost:8180/realms/datawave/protocol/openid-connect/auth \
-          --redeem-url=http://keycloak:8080/realms/datawave/protocol/openid-connect/token \
-          --oidc-jwks-url=http://keycloak:8080/realms/datawave/protocol/openid-connect/certs \
-          --profile-url=http://keycloak:8080/realms/datawave/protocol/openid-connect/userinfo \
-          --redirect-url=http://localhost/oauth2/callback \
-          --upstream=http://metabase:3000 \
-          --http-address=0.0.0.0:4180 \
-          --email-domain=* \
-          --skip-provider-button=true \
-          --cookie-secure=false \
-          --cookie-secret=$$OAUTH2_COOKIE_SECRET \
-          --skip-jwt-bearer-tokens=true
-    environment:
-      OAUTH2_CLIENT_SECRET: ${OAUTH2_CLIENT_SECRET}
-      OAUTH2_COOKIE_SECRET: ${OAUTH2_COOKIE_SECRET}
-    depends_on:
-      keycloak:
-        condition: service_healthy
-    ports:
-      - "4180:4180"
+      - superset_home:/app/superset_home
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./superset/init.sh:/init.sh:ro
+      - ./superset/datasources.yaml:/datasources.yaml:ro
     networks:
       - datawave-net
     logging: *default-logging
 
-  # ── Reverse Proxy (Nginx) ──────────────────────────────────────────────────────
-
-  nginx:
-    image: nginx:latest
-    container_name: datawave-nginx
+  superset:
+    build: ./superset
+    container_name: datawave-superset
     restart: unless-stopped
     depends_on:
-      - metabase
-      - oauth2-proxy
+      superset-init:
+        condition: service_completed_successfully
+      trino:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_OIDC_SECRET: ${SUPERSET_OIDC_SECRET}
+      PYTHONPATH: /app/pythonpath
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - superset_home:/app/superset_home
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
     ports:
-      - "80:80"
+      - "8088:8088"
     networks:
       - datawave-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
     logging: *default-logging
 
 # ── Networks ──────────────────────────────────────────────────────────────────
@@ -521,7 +450,9 @@ volumes:
   postgres_data:
   mysql_data:
   minio_data:
-  ranger_db_data:
-  keycloak_db_data:
-  metabase_db_data:
   es_data:
+  openldap_data:
+  openldap_config:
+  keycloak_data:
+  superset_home:
+  ranger_sync:

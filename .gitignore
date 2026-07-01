@@ -6,9 +6,9 @@ postgres_data/
 mysql_data/
 minio_data/
 es_data/
-ranger_db_data/
-keycloak_db_data/
-metabase_db_data/
+openldap_data/
+keycloak_data/
+superset_home/
 
 # macOS
 .DS_Store
