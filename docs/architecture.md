@@ -39,6 +39,60 @@ MinIO/S3 stores Parquet data files; Iceberg (via Nessie REST catalog) provides t
 
 ---
 
+## Technology Selection Rationale
+
+### Federation Engine — Trino
+**Chosen over:** Apache Spark SQL, Presto, Dremio, Apache Drill
+
+Trino is purpose-built for interactive, read-path SQL federation across heterogeneous sources. Unlike Spark (batch-first, heavy JVM overhead) or Dremio (proprietary acceleration layer), Trino's connector model pushes predicates down to each source, merges results in memory, and returns in seconds — not minutes. Its file-based ACL and `groups.txt` group provider allow zero-dependency RBAC in dev that maps directly to a production Ranger plugin swap.
+
+### Policy Management — Apache Ranger
+**Chosen over:** OPA (Open Policy Agent), Casbin, hand-rolled middleware
+
+Ranger is the industry standard for centralised access control across data platform services (Hive, HDFS, Kafka, Trino). Its UI provides a single pane to define column masking, row filtering, and table-level grants without touching configuration files. The `datawave_trino` Ranger service type maps natively to Trino's access types (`select`, `insert`, `delete`, `all`). In production the Ranger-Trino plugin enforces policies at query time — no sync script needed.
+
+### Identity Provider — Keycloak
+**Chosen over:** Auth0, Okta, AWS Cognito, Dex
+
+Keycloak is self-hosted, open-source, and OIDC/OAuth2 compliant out of the box. Its built-in LDAP User Federation means OpenLDAP users appear in Keycloak with zero custom code — just a JSON configuration block in the realm file. This mirrors how enterprises federate Active Directory into their SSO layer. Auth0/Okta would require paid plans or mocked LDAP binds, adding friction to a local demo.
+
+### User Directory — OpenLDAP
+**Chosen over:** Active Directory (unavailable locally), FreeIPA (heavy), static config files
+
+OpenLDAP provides the standard LDAP protocol (`ldap://`) that every enterprise identity system speaks. Bootstrapping via LDIF files is reproducible and version-controllable. The same LDIF structure works against a production Active Directory or FreeIPA instance with only the `dc=` base DN changed.
+
+### BI Interface — Apache Superset
+**Chosen over:** Grafana, Metabase, Redash, Tableau
+
+Superset has native Trino/Presto SQLAlchemy support and the `impersonate_user=True` connection flag — the only off-the-shelf BI tool that transparently forwards the logged-in user's identity to Trino, enabling per-user RBAC enforcement without a proxy layer. Its Flask-AppBuilder security layer integrates directly with Keycloak OIDC via `AUTH_OAUTH`.
+
+### Audit Store — Elasticsearch + Kibana
+**Chosen over:** PostgreSQL logs, Loki, Splunk, Datadog
+
+Trino's HTTP Event Listener POSTs completed-query JSON directly to Elasticsearch with no intermediate agent. Elasticsearch's inverted index makes `principal: analyst AND errorCode: PERMISSION_DENIED` queries sub-second even at high query volumes. Kibana provides ad-hoc search and dashboard visualisation over the same data. The stack is S3-snapshotable in production for long-term retention.
+
+### Object Storage — MinIO
+**Chosen over:** Local filesystem mounts, AWS S3 (requires account)
+
+MinIO implements the S3 API exactly — Trino's Iceberg connector uses the same `s3://` URI scheme and AWS SDK code paths it would use in production. Switching from MinIO to AWS S3 requires only two environment variable changes (`s3.endpoint` and credentials). This makes MinIO the ideal S3 stand-in for local development.
+
+### Iceberg Table Format + Nessie Catalog
+**Chosen over:** Hive Metastore + ORC, Delta Lake, Apache Hudi
+
+Apache Iceberg is the emerging open standard for lakehouse tables (ACID, schema evolution, time travel, partition pruning). Nessie provides an Iceberg REST catalog with Git-like branch semantics — enabling reproducible data states — without the ZooKeeper + JVM overhead of a Hive Metastore. In production, Nessie can be backed by a persistent store (RocksDB, DynamoDB) with a one-line config change.
+
+### Heterogeneous Sources — PostgreSQL + MySQL
+**Chosen for contrast:** Two different RDBMS vendors in the same federated query
+
+Using both PostgreSQL (logistics) and MySQL (inventory) demonstrates Trino's core value proposition: a cross-source JOIN that would otherwise require an ETL pipeline. PostgreSQL is used for its advanced analytics features (window functions, JSONB, partitioning); MySQL represents the common operational database found in enterprise SaaS products.
+
+### Orchestration — Docker Compose
+**Chosen over:** Kubernetes, Nomad, bare-metal scripts
+
+Docker Compose gives a reproducible, single-command local environment with `depends_on` health-check ordering and named volumes — no cluster, no cloud account, no Helm charts required. The same container images and environment variables are production-ready; the only change is the orchestrator (see [`prod-improvements.md`](prod-improvements.md)).
+
+---
+
 ## Implementation Status
 
 The diagram above is the **target** architecture. The table below maps each component to its state in the current `docker-compose.yml`.
