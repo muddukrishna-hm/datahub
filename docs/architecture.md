@@ -186,20 +186,60 @@ Trino is the hub. It receives SQL from Superset (or any JDBC/CLI client), applie
 | Access control | File-based — `rules.json` + `groups.txt` |
 | Audit | HTTP Event Listener → `elasticsearch:9200/trino-query-audit/_doc` |
 
-**Catalog connectors:**
+**Catalog connectors (`trino/etc/catalog/`):**
+
+**`postgresql.properties`**
+```properties
+connector.name=postgresql
+connection-url=jdbc:postgresql://postgres:5432/logistics
+connection-user=datawave
+connection-password=${ENV:TRINO_POSTGRES_PASSWORD}   # injected from .env at startup
+postgresql.array-mapping=AS_ARRAY                    # map PG arrays to Trino arrays
+```
+
+**`mysql.properties`**
+```properties
+connector.name=mysql
+connection-url=jdbc:mysql://mysql:3306
+connection-user=datawave
+connection-password=${ENV:TRINO_MYSQL_PASSWORD}      # injected from .env at startup
+```
+
+**`iceberg.properties`**
+```properties
+connector.name=iceberg
+iceberg.catalog.type=nessie                          # Nessie REST catalog (git-like versioning)
+iceberg.nessie-catalog.uri=http://nessie:19120/api/v1
+iceberg.nessie-catalog.ref=main                      # branch name
+iceberg.nessie-catalog.default-warehouse-dir=s3://warehouse/
+
+fs.native-s3.enabled=true
+s3.endpoint=http://minio:9000                        # MinIO S3-compatible endpoint
+s3.region=us-east-1
+s3.path-style-access=true                            # required for MinIO (no virtual-host DNS)
+s3.aws-access-key=minioadmin
+s3.aws-secret-key=${ENV:TRINO_MINIO_SECRET_KEY}
+```
+
+**`tpch.properties`**
+```properties
+connector.name=tpch
+tpch.splits-per-node=4                               # built-in benchmark data; no external dependency
+```
 
 | Catalog | Connector | Backend |
 |---|---|---|
 | `postgresql` | `postgresql` | `postgres:5432/logistics` |
 | `mysql` | `mysql` | `mysql:3306/inventory` |
 | `iceberg` | `iceberg` (Nessie REST) | `nessie:19120` + `minio:9000/warehouse` |
+| `tpch` | `tpch` (built-in) | in-memory synthetic data |
 
 **RBAC groups (`trino/etc/groups.txt`):**
 
 ```
 data-analyst:analyst
 data-engineer:engineer
-data-admin:admin,krishna,trino
+data-admin:admin,trino
 ```
 
 Each entry maps a Trino group name to its members. Users authenticate via Keycloak OIDC; Superset passes the `preferred_username` to Trino as the query principal; Trino looks up the username here to resolve group membership before applying `rules.json`.
