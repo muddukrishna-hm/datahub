@@ -13,6 +13,7 @@ A SQL federation platform running locally via Docker Compose. **Trino** federate
 - **Docker Desktop 4.x+** (Mac/Windows) or **Docker Engine 24+ with Compose v2** (Linux)
 - At least **8 GB RAM** allocated to Docker (Ranger + Elasticsearch are the heaviest services)
 - Ports 389, 5432, 3306, 6080, 8080, 8085, 8088, 8180, 8983, 9000, 9001, 9200, 19120, 5601 available
+- **Apple Silicon (M1/M2/M3):** fully supported — `platform: linux/amd64` is set on the four x86-only images (OpenLDAP, phpLDAPadmin, Ranger, Ranger-Solr); Docker Desktop uses Rosetta 2 to run them transparently
 
 ---
 
@@ -79,6 +80,8 @@ All credentials are in `.env` at the project root.
 ### Logging into Superset
 
 Superset uses Keycloak OIDC for authentication. Click the **Sign in with Keycloak** button on the Superset login page and use one of these LDAP users:
+
+> **Local development only.** These are demo credentials seeded into OpenLDAP for evaluation. In production, users are provisioned through your corporate directory (AD/LDAP) and no default passwords exist. See [docs/prod-improvements.md](docs/prod-improvements.md) for secrets management and user provisioning guidance.
 
 | Username | Password | Trino group | Access level |
 |---|---|---|---|
