@@ -1,0 +1,32 @@
+{
+  "catalogs": [
+    { "group": "data-admin",    "catalog": ".*",                        "allow": "all"       },
+    { "group": "data-engineer", "catalog": "postgresql|mysql|iceberg",  "allow": "all"       },
+    { "group": "data-engineer", "catalog": "tpch|system",               "allow": "read-only" },
+    { "group": "data-analyst",  "catalog": "postgresql|mysql|iceberg|tpch", "allow": "read-only" },
+    { "allow": "none" }
+  ],
+  "schemas": [
+    { "group": "data-admin",    "catalog": ".*",      "schema": ".*", "owner": true  },
+    { "group": "data-engineer", "catalog": "iceberg", "schema": ".*", "owner": true  },
+    { "owner": false }
+  ],
+  "tables": [
+    {
+      "group": "data-analyst",
+      "catalog": "postgresql",
+      "schema": "logistics",
+      "table": "customers",
+      "privileges": ["SELECT"],
+      "columns": [
+        { "name": "credit_card", "mask": "NULL" }
+      ]
+    },
+    { "group": "data-analyst",  "catalog": "postgresql", "schema": "logistics",  "table": ".*", "privileges": ["SELECT"] },
+    { "group": "data-analyst",  "catalog": "mysql",      "schema": "inventory",  "table": ".*", "privileges": ["SELECT"] },
+    { "group": "data-analyst",  "catalog": "iceberg",    "schema": ".*",         "table": ".*", "privileges": ["SELECT"] },
+    { "group": "data-analyst",  "catalog": "tpch",       "schema": ".*",         "table": ".*", "privileges": ["SELECT"] },
+    { "group": "data-engineer", "catalog": ".*",         "schema": ".*",         "table": ".*", "privileges": ["SELECT", "INSERT", "UPDATE", "DELETE"] },
+    { "group": "data-admin",    "catalog": ".*",         "schema": ".*",         "table": ".*", "privileges": ["SELECT", "INSERT", "UPDATE", "DELETE", "OWNERSHIP"] }
+  ]
+}

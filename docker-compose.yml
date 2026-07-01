@@ -1,0 +1,527 @@
+name: datawave-sql-federation
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # ── Data Sources ─────────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:15
+    container_name: datawave-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: datawave
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: logistics
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datawave -d logistics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  mysql:
+    image: mysql:8.0
+    container_name: datawave-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: inventory
+      MYSQL_USER: datawave
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d
+    ports:
+      - "3306:3306"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  # ── Object Storage (MinIO / S3-compatible) ────────────────────────────────────
+
+  minio:
+    image: minio/minio:latest
+    container_name: datawave-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BROWSER_REDIRECT_URL: http://localhost/minio
+      MINIO_CONSOLE_SUBPATH: /minio
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: datawave-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/init.sh"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./minio/init.sh:/init.sh:ro
+    networks:
+      - datawave-net
+    restart: "no"
+
+  # ── Iceberg REST Catalog (Nessie) ─────────────────────────────────────────────
+
+  nessie:
+    image: projectnessie/nessie:latest
+    container_name: datawave-nessie
+    restart: unless-stopped
+    environment:
+      QUARKUS_PROFILE: prod
+      NESSIE_VERSION_STORE_TYPE: IN_MEMORY
+    ports:
+      - "19120:19120"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19120/api/v2/config"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  # ── SQL Federation Engine (Trino) ─────────────────────────────────────────────
+
+  trino:
+    image: trinodb/trino:458
+    container_name: datawave-trino
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/start.sh"]
+    environment:
+      TRINO_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TRINO_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TRINO_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      nessie:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      ranger-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./trino/etc:/etc/trino-source:ro
+      - ./trino/start.sh:/start.sh:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+
+  # ── Authorization Engine (Apache Ranger) ──────────────────────────────────────
+
+  ranger-db:
+    image: postgres:15
+    container_name: datawave-ranger-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${RANGER_DB_PASSWORD}
+      POSTGRES_DB: ranger
+    volumes:
+      - ranger_db_data:/var/lib/postgresql/data
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ranger"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  ranger-solr:
+    image: apache/ranger-solr:2.8.0
+    container_name: datawave-ranger-solr
+    restart: unless-stopped
+    command: solr-precreate ranger_audits /opt/solr/server/solr/configsets/ranger_audits/
+    ports:
+      - "8983:8983"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8983/solr/"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  ranger:
+    image: apache/ranger:2.8.0
+    container_name: datawave-ranger
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    volumes:
+      - ./ranger/scripts/entrypoint.sh:/entrypoint.sh:ro
+    environment:
+      RANGER_DB_TYPE: postgres
+      RANGER_DB_USER: rangeradmin
+      RANGER_DB_PASSWORD: ${RANGER_DB_PASSWORD}
+      POSTGRES_PASSWORD: ${RANGER_DB_PASSWORD}
+      RANGER_ADMIN_PASSWORD: ${RANGER_ADMIN_PASSWORD}
+    depends_on:
+      ranger-db:
+        condition: service_healthy
+      ranger-solr:
+        condition: service_healthy
+    ports:
+      - "6080:6080"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:6080/login.jsp"]
+      interval: 30s
+      timeout: 20s
+      retries: 15
+      start_period: 180s
+    logging: *default-logging
+
+  ranger-init:
+    image: curlimages/curl:latest
+    container_name: datawave-ranger-init
+    restart: "no"
+    depends_on:
+      ranger:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/scripts/ranger-init.sh"]
+    environment:
+      RANGER_ADMIN_PASSWORD: ${RANGER_ADMIN_PASSWORD}
+      RANGER_URL: http://ranger:6080
+    volumes:
+      - ./ranger/scripts:/scripts:ro
+    networks:
+      - datawave-net
+    logging: *default-logging
+
+  # ── SSO / Identity Provider (Keycloak) ────────────────────────────────────────
+
+  keycloak-db:
+    image: postgres:15
+    container_name: datawave-keycloak-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      POSTGRES_DB: keycloak
+    volumes:
+      - keycloak_db_data:/var/lib/postgresql/data
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: datawave-keycloak
+    restart: unless-stopped
+    command: ["start-dev", "--import-realm"]
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_PORT: "8180"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8180:8080"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 90s
+    logging: *default-logging
+
+  # ── BI / Analytics Tool (Metabase) ────────────────────────────────────────────
+
+  metabase-db:
+    image: postgres:15
+    container_name: datawave-metabase-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: metabase
+      POSTGRES_PASSWORD: ${METABASE_DB_PASSWORD}
+      POSTGRES_DB: metabase
+    volumes:
+      - metabase_db_data:/var/lib/postgresql/data
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metabase -d metabase"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: datawave-metabase
+    restart: unless-stopped
+    depends_on:
+      metabase-db:
+        condition: service_healthy
+      trino:
+        condition: service_healthy
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: 5432
+      MB_DB_USER: metabase
+      MB_DB_HOST: metabase-db
+      MB_DB_PASS: ${METABASE_DB_PASSWORD}
+    ports:
+      - "3000:3000"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+    logging: *default-logging
+
+  metabase-init:
+    image: curlimages/curl:latest
+    container_name: datawave-metabase-init
+    restart: "no"
+    entrypoint: ["/bin/sh", "/init.sh"]
+    depends_on:
+      metabase:
+        condition: service_healthy
+    environment:
+      MB_ADMIN_PASSWORD: ${METABASE_ADMIN_PASSWORD}
+    volumes:
+      - ./metabase/init.sh:/init.sh:ro
+    networks:
+      - datawave-net
+
+  # ── Audit & Observability (Elasticsearch + Kibana) ────────────────────────────
+
+  elasticsearch:
+    image: elasticsearch:8.13.0
+    container_name: datawave-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.name=datawave-audit
+      - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD}
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+      - ./elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:$$ELASTIC_PASSWORD http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s"]
+      interval: 20s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    logging: *default-logging
+
+  es-init:
+    image: curlimages/curl:latest
+    container_name: datawave-es-init
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/init.sh"]
+    environment:
+      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_PASSWORD}
+    volumes:
+      - ./elasticsearch/set-kibana-password.sh:/init.sh:ro
+    networks:
+      - datawave-net
+    restart: "no"
+    logging: *default-logging
+
+  kibana:
+    image: kibana:8.13.0
+    container_name: datawave-kibana
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      es-init:
+        condition: service_completed_successfully
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_PASSWORD}
+      SERVER_BASEPATH: /kibana
+      SERVER_REWRITEBASEPATH: "true"
+      SERVER_PUBLICBASEURL: http://localhost/kibana
+    ports:
+      - "5601:5601"
+    networks:
+      - datawave-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:$$ELASTICSEARCH_PASSWORD http://localhost:5601/kibana/api/status | grep -q '\"level\":\"available\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+
+  kibana-init:
+    image: curlimages/curl:latest
+    container_name: datawave-kibana-init
+    restart: "no"
+    entrypoint: ["/bin/sh", "/init.sh"]
+    environment:
+      ELASTICSEARCH_PASSWORD: ${ELASTICSEARCH_PASSWORD}
+    depends_on:
+      kibana:
+        condition: service_healthy
+    volumes:
+      - ./elasticsearch/kibana-init.sh:/init.sh:ro
+    networks:
+      - datawave-net
+
+  # ── SSO Gateway (OAuth2-Proxy) ─────────────────────────────────────────────────
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0-alpine
+    container_name: datawave-oauth2-proxy
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        exec /bin/oauth2-proxy \
+          --provider=keycloak-oidc \
+          --client-id=datawave-app \
+          --client-secret=$$OAUTH2_CLIENT_SECRET \
+          --skip-oidc-discovery=true \
+          --oidc-issuer-url=http://localhost:8180/realms/datawave \
+          --login-url=http://localhost:8180/realms/datawave/protocol/openid-connect/auth \
+          --redeem-url=http://keycloak:8080/realms/datawave/protocol/openid-connect/token \
+          --oidc-jwks-url=http://keycloak:8080/realms/datawave/protocol/openid-connect/certs \
+          --profile-url=http://keycloak:8080/realms/datawave/protocol/openid-connect/userinfo \
+          --redirect-url=http://localhost/oauth2/callback \
+          --upstream=http://metabase:3000 \
+          --http-address=0.0.0.0:4180 \
+          --email-domain=* \
+          --skip-provider-button=true \
+          --cookie-secure=false \
+          --cookie-secret=$$OAUTH2_COOKIE_SECRET \
+          --skip-jwt-bearer-tokens=true
+    environment:
+      OAUTH2_CLIENT_SECRET: ${OAUTH2_CLIENT_SECRET}
+      OAUTH2_COOKIE_SECRET: ${OAUTH2_COOKIE_SECRET}
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    ports:
+      - "4180:4180"
+    networks:
+      - datawave-net
+    logging: *default-logging
+
+  # ── Reverse Proxy (Nginx) ──────────────────────────────────────────────────────
+
+  nginx:
+    image: nginx:latest
+    container_name: datawave-nginx
+    restart: unless-stopped
+    depends_on:
+      - metabase
+      - oauth2-proxy
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    ports:
+      - "80:80"
+    networks:
+      - datawave-net
+    logging: *default-logging
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+
+networks:
+  datawave-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+
+volumes:
+  postgres_data:
+  mysql_data:
+  minio_data:
+  ranger_db_data:
+  keycloak_db_data:
+  metabase_db_data:
+  es_data:

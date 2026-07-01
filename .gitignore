@@ -1,0 +1,20 @@
+# Credentials — copy .env.example to .env and fill in values before starting
+.env
+
+# Docker volumes / runtime state
+postgres_data/
+mysql_data/
+minio_data/
+es_data/
+ranger_db_data/
+keycloak_db_data/
+metabase_db_data/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+*.iml
+.claude/
+.cursor/

@@ -1,0 +1,3 @@
+data-analyst:analyst,metabase
+data-engineer:engineer
+data-admin:admin,krishna,trino

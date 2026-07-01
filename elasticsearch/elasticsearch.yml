@@ -1,0 +1,20 @@
+cluster.name: datawave-audit
+node.name: datawave-es-node-1
+
+# Single-node mode for local development
+discovery.type: single-node
+
+# Basic auth enabled; password supplied via ELASTIC_PASSWORD (secrets/elasticsearch_password.txt)
+xpack.security.enabled: true
+xpack.security.http.ssl.enabled: false
+
+# Network
+network.host: 0.0.0.0
+http.port: 9200
+transport.port: 9300
+
+# Indices for Trino query audit events
+action.auto_create_index: "trino-query-audit*,ranger-audit*,-.security*"
+
+# Memory
+bootstrap.memory_lock: false
