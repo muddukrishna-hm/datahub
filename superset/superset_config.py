@@ -8,6 +8,12 @@ SQLALCHEMY_DATABASE_URI = "sqlite:////app/superset_home/superset.db"
 TALISMAN_ENABLED = False
 WTF_CSRF_ENABLED = True
 
+# ── Deployment ────────────────────────────────────────────────────────────────
+# Set PUBLIC_HOSTNAME in .env to the EC2 IP / public hostname for remote deploys.
+_host = os.environ.get("PUBLIC_HOSTNAME", "localhost")
+_KC_PUBLIC  = f"http://{_host}:8180"   # browser-facing Keycloak URL
+_SUPERSET   = f"http://{_host}:8088"   # browser-facing Superset URL
+
 # ── Keycloak OIDC ─────────────────────────────────────────────────────────────
 AUTH_TYPE = AUTH_OAUTH
 AUTH_USER_REGISTRATION = True
@@ -28,11 +34,11 @@ OAUTH_PROVIDERS = [
             "api_base_url": "http://keycloak:8080/realms/datawave/protocol/openid-connect/",
             "jwks_uri": "http://keycloak:8080/realms/datawave/protocol/openid-connect/certs",
             # browser-facing: what the user's browser is redirected to
-            "authorize_url": "http://localhost:8180/realms/datawave/protocol/openid-connect/auth",
+            "authorize_url": f"{_KC_PUBLIC}/realms/datawave/protocol/openid-connect/auth",
             "client_kwargs": {
                 "scope": "openid email profile",
             },
-            "redirect_uri": "http://localhost:8088/oauth-authorized/keycloak",
+            "redirect_uri": f"{_SUPERSET}/oauth-authorized/keycloak",
         },
     }
 ]

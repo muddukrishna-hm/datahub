@@ -153,19 +153,21 @@ services:
     image: quay.io/keycloak/keycloak:24.0
     container_name: datawave-keycloak
     restart: unless-stopped
-    command: start-dev --import-realm
+    entrypoint: ["/bin/bash", "/keycloak-start.sh"]
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
       KC_HTTP_PORT: "8080"
-      KC_HOSTNAME: localhost
+      KC_HOSTNAME: ${PUBLIC_HOSTNAME:-localhost}
       KC_HOSTNAME_PORT: "8180"
       KC_HOSTNAME_STRICT: "false"
       KC_HOSTNAME_STRICT_BACKCHANNEL: "false"
       KC_HTTP_ENABLED: "true"
       KC_HEALTH_ENABLED: "true"
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-localhost}
     volumes:
-      - ./keycloak/datawave-realm.json:/opt/keycloak/data/import/datawave-realm.json:ro
+      - ./keycloak/start.sh:/keycloak-start.sh:ro
+      - ./keycloak/datawave-realm.json:/tmp/datawave-realm.json.tpl:ro
       - keycloak_data:/opt/keycloak/data
     ports:
       - "8180:8080"
@@ -179,7 +181,7 @@ services:
       interval: 20s
       timeout: 10s
       retries: 10
-      start_period: 60s
+      start_period: 120s
     logging: *default-logging
 
   phpldapadmin:
@@ -441,6 +443,7 @@ services:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
       SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
       SUPERSET_OIDC_SECRET: ${SUPERSET_OIDC_SECRET}
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-localhost}
       PYTHONPATH: /app/pythonpath
     volumes:
       - superset_home:/app/superset_home
@@ -465,6 +468,7 @@ services:
     environment:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
       SUPERSET_OIDC_SECRET: ${SUPERSET_OIDC_SECRET}
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME:-localhost}
       PYTHONPATH: /app/pythonpath
     volumes:
       - superset_home:/app/superset_home
