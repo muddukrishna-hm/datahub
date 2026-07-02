@@ -32,6 +32,20 @@ AUTH = HTTPBasicAuth(RANGER_USER, RANGER_PASS)
 
 ALL_PRIVS = ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP"]
 
+# Column masking rules are not yet supported in the Ranger Trino plugin's
+# dataMaskPolicyItems, so we hardcode them here and always prepend them to
+# the synced table rules so they survive ranger-sync overwrites.
+MASKING_RULES = [
+    {
+        "group": "data-analyst",
+        "catalog": "postgresql",
+        "schema": "logistics",
+        "table": "customers",
+        "privileges": ["SELECT"],
+        "columns": [{"name": "credit_card", "mask": "NULL"}],
+    }
+]
+
 RANGER_TO_TRINO = {
     "select": "SELECT",
     "insert": "INSERT",
@@ -141,7 +155,8 @@ def convert(policies):
     catalog_rules.append({"allow": "none"})
     schema_rules.append({"owner": False})
 
-    return {"catalogs": catalog_rules, "schemas": schema_rules, "tables": table_rules}
+    return {"catalogs": catalog_rules, "schemas": schema_rules,
+            "tables": MASKING_RULES + table_rules}
 
 
 def write_rules(rules):

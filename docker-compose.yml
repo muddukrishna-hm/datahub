@@ -299,6 +299,25 @@ services:
       start_period: 180s
     logging: *default-logging
 
+  # ── Ranger Policy Seed (first boot) ─────────────────────────────────────────
+  # Creates the datawave_trino service definition and default RBAC policies in
+  # Ranger on first boot. Idempotent — safe to re-run on restarts.
+
+  ranger-init:
+    build: ./ranger/init
+    container_name: datawave-ranger-init
+    restart: "no"
+    environment:
+      RANGER_URL: http://ranger:6080
+      RANGER_USER: admin
+      RANGER_PASS: ${RANGER_ADMIN_PASSWORD}
+    networks:
+      - datawave-net
+    depends_on:
+      ranger:
+        condition: service_healthy
+    logging: *default-logging
+
   # ── LDAP → Ranger User/Group Sync ────────────────────────────────────────────
   # Polls OpenLDAP every 60s and upserts users/groups into Ranger Admin via the
   # xusers REST API — replicating what the native Ranger UserSync daemon does.

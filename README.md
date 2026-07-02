@@ -51,13 +51,14 @@ datawave-ranger-solr        healthy
 datawave-ranger             healthy
 datawave-ranger-sync        running
 datawave-ranger-usersync    running
+datawave-ranger-init        Exited (0)
 datawave-phpldapadmin       running
 datawave-elasticsearch      healthy
 datawave-kibana             healthy
 datawave-superset           healthy
 ```
 
-Init containers (`datawave-minio-init`, `datawave-es-init`, `datawave-kibana-init`, `datawave-superset-init`) will show `Exited (0)` — that is expected and correct.
+Init containers (`datawave-ranger-init`, `datawave-minio-init`, `datawave-es-init`, `datawave-kibana-init`, `datawave-superset-init`) will show `Exited (0)` — that is expected and correct.
 
 If a service stays in `starting`, allow another 60 seconds and re-check. If a service shows `unhealthy` or `exited (non-zero)`, see [Troubleshooting](docs/troubleshooting.md).
 
