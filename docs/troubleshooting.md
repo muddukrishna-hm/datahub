@@ -223,6 +223,26 @@ docker compose up -d
 
 ---
 
+### No policies visible in Ranger UI after a fresh deploy
+
+**Symptom:** Ranger UI shows no policies under the `datawave_trino` service after `docker compose down -v && docker compose up`.
+
+**Cause:** Ranger policies are stored in the shared PostgreSQL volume. `down -v` wipes the volume, so policies are lost. The `ranger-init` container re-seeds them automatically on each fresh boot, but it runs once and exits — check its logs if policies are missing:
+
+```bash
+docker logs datawave-ranger-init
+```
+
+**Fix:** If `ranger-init` exited with an error, re-run it manually after Ranger is healthy:
+
+```bash
+docker compose up ranger-init
+```
+
+Then verify policies appear at **http://localhost:6080** → Service Manager → `datawave_trino` → Edit → Policies.
+
+---
+
 ### Ranger policies not syncing to Trino
 
 **Symptom:** Policy change in Ranger UI not reflected in query behaviour after 30 seconds.

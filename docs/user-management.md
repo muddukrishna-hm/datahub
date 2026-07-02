@@ -50,7 +50,7 @@ The `ranger-sync` container converts them to Trino's `rules.json` every 30 secon
 ### data-analyst
 - **Catalogs**: read-only access to all catalogs (can list schemas and tables)
 - **Tables**: `SELECT` only — no INSERT, UPDATE, DELETE, DROP
-- **Column masking**: `credit_card` column in `postgresql.logistics.customers` → masked to `NULL` (defined in `trino/etc/rules.json`; **not yet synced from Ranger** — masking policies require manual rules.json update until sync.py supports `dataMaskPolicyItems`)
+- **Column masking**: `credit_card` column in `postgresql.logistics.customers` → masked to `NULL` (hardcoded in `ranger/sync/sync.py` as `MASKING_RULES`; survives every ranger-sync cycle automatically — Ranger's `dataMaskPolicyItems` are not yet read by sync.py)
 
 ### data-engineer
 - **Catalogs**: full access to all catalogs
