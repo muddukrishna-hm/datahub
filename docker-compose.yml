@@ -299,6 +299,33 @@ services:
       start_period: 180s
     logging: *default-logging
 
+  # ── LDAP → Ranger User/Group Sync ────────────────────────────────────────────
+  # Polls OpenLDAP every 60s and upserts users/groups into Ranger Admin via the
+  # xusers REST API — replicating what the native Ranger UserSync daemon does.
+
+  ranger-usersync:
+    build: ./ranger/usersync
+    container_name: datawave-ranger-usersync
+    restart: unless-stopped
+    environment:
+      RANGER_URL: http://ranger:6080
+      RANGER_USER: admin
+      RANGER_PASS: ${RANGER_ADMIN_PASSWORD}
+      LDAP_URL: ldap://openldap:389
+      LDAP_BIND_DN: cn=admin,dc=datawave,dc=io
+      LDAP_BIND_PASS: ${LDAP_ADMIN_PASSWORD}
+      LDAP_USER_BASE: ou=users,dc=datawave,dc=io
+      LDAP_GROUP_BASE: ou=groups,dc=datawave,dc=io
+      SYNC_INTERVAL: "60"
+    networks:
+      - datawave-net
+    depends_on:
+      ranger:
+        condition: service_healthy
+      openldap:
+        condition: service_healthy
+    logging: *default-logging
+
   # ── Ranger → Trino Policy Sync ───────────────────────────────────────────────
   # Polls Ranger REST API every 30s, converts policies → rules.json on the
   # ranger_sync volume. Trino reloads the file automatically (refresh-period=30s).
