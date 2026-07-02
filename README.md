@@ -29,6 +29,7 @@ docker compose up --build -d
 
 `--build` is required on first run to build the Superset image with the Trino driver. Apache Ranger takes 2–3 minutes to initialise its database schema; Keycloak imports the realm on first boot (~60s). **Total first-boot time: ~7–10 minutes.**
 
+
 ### Confirm everything is healthy
 
 ```bash
@@ -388,6 +389,29 @@ The catalog appears immediately in `SHOW CATALOGS`.
 Users are sourced from **OpenLDAP** — Keycloak federates them automatically. Adding a user via Keycloak UI alone will not give them Trino group membership or RBAC access.
 
 See **[docs/user-management.md](docs/user-management.md)** for the complete guide: adding users, removing users, changing roles, and modifying Ranger policies.
+
+---
+
+## Updating After a Git Pull
+
+```bash
+git pull
+docker compose up --build -d        # rebuilds changed images, restarts affected services
+```
+
+If you changed `.env` or `PUBLIC_HOSTNAME`:
+
+```bash
+git pull
+docker compose down && docker compose up --build -d
+```
+
+If you changed Keycloak realm config (`keycloak/datawave-realm.json`):
+
+```bash
+git pull
+docker compose down -v && docker compose up --build -d   # wipes Keycloak volume so realm re-imports
+```
 
 ---
 
