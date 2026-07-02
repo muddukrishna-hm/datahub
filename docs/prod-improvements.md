@@ -355,36 +355,38 @@ Policies propagate within `ranger.policy-refresh-interval` (default 30s).
 
 ## 4. OpenLDAP → Ranger UserSync
 
-**Current state:** OpenLDAP holds users (`analyst`, `engineer`, `admin`) and groups (`data-analyst`, `data-engineer`, `data-admin`). Trino `groups.txt` maps group names to members manually. Ranger policies reference group names but UserSync is not configured.
+**Current state:** OpenLDAP holds users (`analyst`, `engineer`, `admin`) and groups (`data-analyst`, `data-engineer`, `data-admin`). The `ranger-usersync` container polls LDAP every 60 seconds and upserts users and groups into Ranger Admin via the xusers REST API — users appear in Ranger's Users tab with `userSource=1` (external). Trino `groups.txt` still handles group resolution for Trino's file-based ACL.
 
-**Production goal:** Diagram path **user/group sync** (dashed arrow) — Ranger UserSync pulls LDAP users and groups so policies attach to real directory principals.
+**Production goal:** Diagram path **user/group sync** — Ranger group membership drives policy evaluation so adding a user to an LDAP group immediately gives them the correct Trino access without touching `groups.txt`.
 
-### Step 1 — Deploy Ranger UserSync
+### Docker / Kubernetes — lightweight sync (current approach)
 
-Add a `ranger-usersync` service (not in the current compose):
+Apache publishes no official `ranger-usersync` Docker image — `apache/ranger:2.8.0` ships Ranger Admin only. The `ranger/usersync/` container in this repo implements the same behaviour: poll LDAP with `ldap3`, upsert users and groups into Ranger via `POST /service/xusers/secure/users` and `POST /service/xusers/secure/groups`, then associate memberships via `POST /service/xusers/secure/groupusers`.
 
-```yaml
-ranger-usersync:
-  image: apache/ranger:2.8.0
-  command: ["/opt/ranger/usersync/ranger-usersync-services.sh"]
-  environment:
-    POLICY_MGR_URL: http://ranger:6080
-    SYNC_LDAP_URL: ldap://openldap:389
-    SYNC_LDAP_BIND_DN: cn=admin,dc=datawave,dc=io
-    SYNC_LDAP_BIND_PASSWORD: ${LDAP_ADMIN_PASSWORD}
-    SYNC_LDAP_USER_SEARCH_BASE: ou=users,dc=datawave,dc=io
-    SYNC_LDAP_USER_SEARCH_FILTER: "(uid={0})"
-    SYNC_LDAP_GROUP_SEARCH_BASE: ou=groups,dc=datawave,dc=io
-    SYNC_LDAP_GROUP_SEARCH_FILTER: "(member=uid={0},ou=users,dc=datawave,dc=io)"
-    SYNC_LDAP_GROUP_NAME_ATTRIBUTE: cn
-  depends_on:
-    ranger:
-      condition: service_healthy
-    openldap:
-      condition: service_healthy
+This is the standard approach for Docker/Kubernetes Ranger deployments.
+
+### Bare-metal / VM — native Ranger UserSync
+
+For on-premises installations where Ranger is installed from the distribution tarball, use the native UserSync daemon:
+
+```bash
+# On the Ranger host
+tar -xzf ranger-2.8.0-usersync.tar.gz
+cd ranger-2.8.0-usersync
+# Edit install.properties:
+#   POLICY_MGR_URL = http://ranger:6080
+#   SYNC_SOURCE = ldap
+#   SYNC_LDAP_URL = ldap://openldap:389
+#   SYNC_LDAP_BIND_DN = cn=admin,dc=datawave,dc=io
+#   SYNC_LDAP_BIND_PASSWORD = <LDAP_ADMIN_PASSWORD>
+#   SYNC_LDAP_USER_SEARCH_BASE = ou=users,dc=datawave,dc=io
+#   SYNC_LDAP_GROUP_SEARCH_BASE = ou=groups,dc=datawave,dc=io
+#   SYNC_LDAP_GROUP_NAME_ATTRIBUTE = cn
+sudo ./setup.sh
+sudo ranger-usersync start
 ```
 
-Tune `ranger-usersync-site.xml` for your LDAP schema. For corporate Active Directory, point `SYNC_LDAP_URL` at `ldaps://ad.corp.example:636`.
+For corporate Active Directory replace the LDAP URL with `ldaps://ad.corp.example:636` and set `SYNC_LDAP_USER_OBJECT_CLASS=user`, `SYNC_LDAP_GROUP_OBJECT_CLASS=group`.
 
 ### Step 2 — Align Ranger policies with LDAP groups
 

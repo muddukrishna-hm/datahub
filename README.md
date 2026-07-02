@@ -48,6 +48,7 @@ datawave-trino              healthy
 datawave-ranger-solr        healthy
 datawave-ranger             healthy
 datawave-ranger-sync        running
+datawave-ranger-usersync    running
 datawave-phpldapadmin       running
 datawave-elasticsearch      healthy
 datawave-kibana             healthy
