@@ -11,7 +11,8 @@ A SQL federation platform running locally via Docker Compose. **Trino** federate
 ## Prerequisites
 
 - **Docker Desktop 4.x+** (Mac/Windows) or **Docker Engine 24+ with Compose v2** (Linux)
-- At least **8 GB RAM** allocated to Docker (Ranger + Elasticsearch are the heaviest services)
+- At least **12 GB RAM** allocated to Docker (the stack uses ~6.5 GB at steady state; 8 GB is too close to the edge — Ranger, Elasticsearch, Trino, and Keycloak each consume ~1 GB)
+- **25 GB free disk space** (Docker images alone are ~15 GB; Apache Ranger is 5 GB by itself)
 - Ports 389, 5432, 3306, 6080, 8080, 8085, 8088, 8180, 8983, 9000, 9001, 9200, 19120, 5601 available
 - **Apple Silicon (M1/M2/M3):** fully supported — `platform: linux/amd64` is set on the four x86-only images (OpenLDAP, phpLDAPadmin, Ranger, Ranger-Solr); Docker Desktop uses Rosetta 2 to run them transparently
 

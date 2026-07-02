@@ -10,12 +10,12 @@ Before raising issues, verify host resources meet these minimums:
 |---|---|---|
 | Docker Engine | 24.x | latest stable |
 | Docker Compose | v2.20+ | latest stable |
-| RAM available to Docker | 6 GB | **8 GB** |
+| RAM available to Docker | 10 GB | **12 GB** |
 | CPU cores | 4 | 8 |
-| Free disk | 5 GB | 10 GB |
+| Free disk | 20 GB | **25 GB** |
 | OS | Linux, macOS 13+, Windows WSL2 | Linux |
 
-> **macOS / Docker Desktop:** Go to **Preferences → Resources → Memory** and set to at least 8 GB. Docker Desktop defaults to 2 GB which will cause Elasticsearch, Trino, and Ranger to OOM-kill each other.
+> **macOS / Docker Desktop:** Go to **Preferences → Resources → Memory** and set to at least **12 GB**. The stack uses ~6.5 GB at steady state — 8 GB leaves almost no headroom and init-time bursts will OOM-kill Ranger or Elasticsearch.
 
 ---
 
