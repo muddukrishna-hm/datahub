@@ -12,14 +12,21 @@ Browser login (Keycloak OIDC)
                 → Query allowed / denied / columns masked
 ```
 
-Three systems must be in sync for a user to work:
+Background sync processes keep the systems aligned automatically:
 
-| System | What it controls |
-|---|---|
-| **OpenLDAP** | Authentication — who can log in and what password |
-| **Keycloak** | SSO — federates LDAP users into the DataWave realm |
-| **Trino `groups.txt`** | Authorization — which Trino RBAC group the user belongs to |
-| **Ranger** | Policy — what each group is allowed to do |
+```
+OpenLDAP ──(ranger-usersync, 60s)──► Ranger Admin (users & groups)
+Ranger   ──(ranger-sync, 30s)──────► Trino rules.json (policies)
+```
+
+Four systems must be in sync for a user to work:
+
+| System | What it controls | How it's kept in sync |
+|---|---|---|
+| **OpenLDAP** | Authentication — who can log in and what password | Manual (phpLDAPadmin or CLI) |
+| **Keycloak** | SSO — federates LDAP users into the DataWave realm | Auto-syncs from LDAP every 5 min |
+| **Trino `groups.txt`** | Authorization — which Trino RBAC group the user belongs to | Manual edit + `docker compose restart trino` |
+| **Ranger** | Policy — what each group is allowed to do | Users/groups auto-synced from LDAP every 60s via `ranger-usersync` |
 
 ---
 
@@ -30,6 +37,8 @@ Three systems must be in sync for a user to work:
 | `analyst` | `analyst123` | `data-analyst` | `data-analyst` | Read-only analyst |
 | `engineer` | `engineer123` | `data-engineer` | `data-engineer` | Read-write engineer |
 | `admin` | `admin123` | `data-admin` | `data-admin` | Full admin |
+
+> **Local development only.** These are demo credentials. See [prod-improvements.md](prod-improvements.md) for production user provisioning.
 
 ---
 
@@ -65,8 +74,6 @@ The `ranger-sync` container converts them to Trino's `rules.json` every 30 secon
 4. Navigate to `ou=groups` → click the target group (e.g. `cn=data-analyst`) → **Add new attribute** → `member` → enter the user's full DN (e.g. `uid=alice,ou=users,dc=datawave,dc=io`) → **Update Object**.
 
 **Option B — CLI**
-
-Create a new LDIF file or run `ldapadd` live. Example for a new analyst `alice`:
 
 ```bash
 docker exec datawave-openldap ldapadd \
@@ -106,16 +113,20 @@ Edit `trino/etc/groups.txt` and add the username to the appropriate group line:
 ```
 data-analyst:analyst,alice
 data-engineer:engineer
-data-admin:admin,krishna,trino
+data-admin:admin,trino
 ```
 
-Restart Trino to pick up the new groups.txt:
+Restart Trino to pick up the change:
 
 ```bash
 docker compose restart trino
 ```
 
-### Step 3 — First Login
+### Step 3 — Ranger sync (automatic)
+
+`ranger-usersync` polls LDAP every 60 seconds — the new user and their group membership appear in Ranger automatically. No manual Ranger action needed.
+
+### Step 4 — First Login
 
 The user logs in at **http://localhost:8088** via Keycloak SSO. Keycloak auto-syncs from LDAP (sync interval: 5 min), so the new user appears automatically. On first login Superset creates their account with the `Alpha` role.
 
@@ -123,7 +134,7 @@ The user logs in at **http://localhost:8088** via Keycloak SSO. Keycloak auto-sy
 
 ## Removing a User
 
-### Remove from OpenLDAP
+### Step 1 — Remove from OpenLDAP
 
 ```bash
 docker exec datawave-openldap ldapdelete \
@@ -133,26 +144,28 @@ docker exec datawave-openldap ldapdelete \
   "uid=alice,ou=users,dc=datawave,dc=io"
 ```
 
-### Remove from groups.txt
+### Step 2 — Remove from groups.txt
 
 Edit `trino/etc/groups.txt` and remove the username, then `docker compose restart trino`.
+
+> **Note:** `ranger-usersync` only upserts — it does not delete users from Ranger when they are removed from LDAP. Remove the user manually in the Ranger UI under **Settings → Users/Groups** if needed.
 
 ---
 
 ## Changing a User's Role
 
-Move the username from one group to another in **both** places:
+Move the username from one group to another in both places:
 
 1. **LDAP** — remove from old group, add to new group (`ldapmodify`)
 2. **`trino/etc/groups.txt`** — move username to the new group line, restart Trino
 
-The Ranger policy is group-based, so no Ranger change is needed when moving between existing groups.
+The Ranger policy is group-based and `ranger-usersync` will update the group membership in Ranger within 60 seconds.
 
 ---
 
 ## Modifying Permissions via Ranger
 
-Open Ranger at **http://localhost:6080** — log in as `admin` with the `RANGER_ADMIN_PASSWORD` value from `.env` (default: `RangerAdmin@1`).
+Open Ranger at **http://localhost:6080** — log in as `admin` with the `RANGER_ADMIN_PASSWORD` value from `.env`.
 
 Navigate to **Access Manager → datawave_trino** to view and edit policies.
 
@@ -213,4 +226,10 @@ docker exec datawave-trino cat /etc/ranger-sync/rules.json
 
 ```bash
 docker logs datawave-ranger-sync 2>&1 | tail -5
+```
+
+**Check ranger-usersync is running:**
+
+```bash
+docker logs datawave-ranger-usersync 2>&1 | tail -10
 ```

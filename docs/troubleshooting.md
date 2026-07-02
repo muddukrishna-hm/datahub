@@ -48,22 +48,17 @@ docker stats --no-stream
 **Fix:**
 
 ```bash
-# Watch Ranger's startup progress
 docker compose logs -f ranger
-
-# Look for this line — it means Ranger is ready:
-# "Ranger Admin is ready"
+# Look for: "Ranger Admin is ready"
 ```
 
-Wait for Ranger before troubleshooting anything else. Trino, Metabase, and Nginx will start automatically once Ranger passes its health check.
+Wait for Ranger before troubleshooting anything else. Trino and Superset start automatically once Ranger passes its health check.
 
 ---
 
 ### A container immediately exits or crashes
 
-**Symptom:** A service shows `Exited` status in `docker compose ps`.
-
-**Fix:**
+**Symptom:** A service shows `Exited` with a non-zero code in `docker compose ps`.
 
 ```bash
 docker compose logs <service-name>
@@ -75,9 +70,9 @@ Common causes:
 |---|---|---|
 | Any | Port already in use on host | `lsof -i :<port>` then stop the conflicting process or change the host port in `docker-compose.yml` |
 | `elasticsearch` | `vm.max_map_count` too low (Linux) | `sudo sysctl -w vm.max_map_count=262144` |
-| `ranger` | Ranger DB not yet ready | Wait — `ranger-db` and `ranger-solr` must be healthy first |
-| `trino` | Dependency not healthy | Wait for `postgres`, `mysql`, `minio`, `nessie`, `elasticsearch` |
-| `keycloak` | DB not yet ready | Wait for `keycloak-db` |
+| `ranger` | Postgres not yet ready | Wait — `postgres` and `ranger-solr` must be healthy first |
+| `trino` | Dependency not healthy | Wait for `postgres`, `mysql`, `minio`, `nessie`, `elasticsearch`, `ranger-sync` |
+| `keycloak` | OpenLDAP not yet ready | Wait for `openldap` to be healthy |
 
 ---
 
@@ -104,52 +99,47 @@ lsof -i :8080
 
 ---
 
-## Metabase Issues
+## Superset Issues
 
-### "DataWave Federation" connection is missing
+### "Sign in with Keycloak" button missing
 
-**Symptom:** The database selector in the Metabase SQL editor does not show a "DataWave Federation" connection.
-
-**Cause:** The `metabase-init` container runs once after Metabase starts and creates the connection. It may not have completed successfully.
+**Cause:** Superset started before Keycloak was healthy, or `superset_config.py` did not load correctly.
 
 **Fix:**
 
 ```bash
-docker start datawave-metabase-init
-docker logs -f datawave-metabase-init
-```
-
-Look for `Done` at the end of the log. If it exits with an error, check that `datawave-metabase` is healthy first:
-
-```bash
-docker compose ps metabase
+docker compose restart superset
+docker compose logs -f superset | grep -i "keycloak\|oidc\|error"
 ```
 
 ---
 
-### Metabase shows a setup wizard after login
+### SQL Lab shows "Unable to add a new tab to the backend"
 
-**Symptom:** After SSO login, Metabase displays a "Welcome to Metabase" setup screen.
+**Cause:** The user is missing the `Alpha` Superset role (needed for SQL Lab access).
 
-**Cause:** The admin account was not created by `metabase-init` (it may not have run yet).
-
-**Fix:** Click through the setup wizard, then return to http://localhost/ and log in as the Keycloak `admin` user. The three Trino connections will appear once `metabase-init` completes.
+**Fix:** Log in as the Superset `admin` user → **Settings → List Users** → find the affected user → add the `Alpha` role.
 
 ---
 
-### Metabase returns "Cannot connect to Trino"
+### Schema dropdown in SQL Lab shows only `system` schemas
+
+**Cause:** Superset queries `information_schema.schemata` in Trino's `system` catalog when listing schemas. Ensure the analyst group has `read-only` access to the `system` catalog in `trino/etc/rules.json`.
+
+---
+
+### Superset shows a blank page after Keycloak login
+
+**Cause:** OIDC redirect URI mismatch or Keycloak not yet healthy.
 
 **Fix:**
 
 ```bash
-# Check Trino is healthy
-docker compose ps trino
-
-# Check Trino can reach its dependencies
-docker compose logs trino | tail -50
+docker compose logs -f superset | grep -i "error\|redirect\|oidc"
+docker compose logs -f keycloak | grep -i "error\|redirect"
 ```
 
-If Trino is healthy, check that the connection in Metabase uses `trino` (the container hostname) not `localhost`.
+Confirm `http://localhost:8088/oauth-authorized/keycloak` is listed as a valid redirect URI in the Keycloak `superset` client.
 
 ---
 
@@ -157,11 +147,7 @@ If Trino is healthy, check that the connection in Metabase uses `trino` (the con
 
 ### "Access Denied" when the query should be allowed
 
-**Symptom:** A query returns `Access Denied` but the user's role should permit it.
-
 **Cause 1:** The group provider did not load correctly.
-
-**Fix:**
 
 ```bash
 docker logs datawave-trino 2>&1 | grep -i "group provider"
@@ -174,15 +160,20 @@ If missing, restart Trino:
 docker compose restart trino
 ```
 
-**Cause 2:** The username in the query does not match any group in `trino/etc/groups.txt`.
+**Cause 2:** The username is not listed in `trino/etc/groups.txt` under the correct group.
 
-**Fix:** Check `trino/etc/groups.txt` and ensure the username is listed under the correct group.
+**Fix:** Edit `groups.txt`, add the username to the right group line, then `docker compose restart trino`.
+
+**Cause 3:** `rules.json` has not been written yet (ranger-sync still waiting for Ranger).
+
+```bash
+docker logs datawave-ranger-sync 2>&1 | tail -10
+docker exec datawave-trino cat /etc/ranger-sync/rules.json
+```
 
 ---
 
 ### Trino query times out or hangs
-
-**Fix:**
 
 ```bash
 docker compose logs -f trino
@@ -197,9 +188,9 @@ Check for:
 
 ### Trino Web UI shows no query history
 
-**Cause:** The Trino Web UI only shows queries made after Trino started. Historic queries are in Elasticsearch.
+**Cause:** The Trino Web UI only shows queries made after Trino started. Historical queries are in Elasticsearch/Kibana.
 
-**Fix:** Go to http://localhost/kibana/ and search the `trino-query-audit` index for historical queries.
+**Fix:** Go to **http://localhost:5601** (Kibana) and search the `trino-query-audit` index.
 
 ---
 
@@ -207,7 +198,7 @@ Check for:
 
 ### Ranger takes too long to start (3–5 minutes is normal)
 
-**Cause:** On first boot, Ranger downloads the PostgreSQL JDBC driver and runs database migrations. This is normal.
+**Cause:** On first boot, Ranger runs database migrations against PostgreSQL. This is normal.
 
 ```bash
 docker compose logs -f ranger
@@ -218,64 +209,75 @@ docker compose logs -f ranger
 
 ### Ranger admin login fails
 
-**Symptom:** Cannot log in to http://localhost/ranger/ with `admin` and the password from `RANGER_ADMIN_PASSWORD` in `.env`.
+**Symptom:** Cannot log in to **http://localhost:6080** with `admin` and `RANGER_ADMIN_PASSWORD` from `.env`.
 
-**Cause:** Ranger DB initialisation may have used a different password on a previous run, or the volume is in an inconsistent state.
+**Cause:** Ranger DB initialisation may have used a different password on a previous run.
 
-**Fix:** Reset the Ranger database volume:
+**Fix:** Reset the Ranger state (uses the shared postgres volume):
 
 ```bash
 docker compose down
-docker volume rm datawave-sql-federation_ranger_db_data
-docker compose up -d ranger-db ranger-solr ranger
-# Wait 3–5 minutes for Ranger to reinitialise
+docker volume rm datawave-sql-federation_postgres_data
+docker compose up -d
 ```
 
 ---
 
-### Ranger policies not taking effect
+### Ranger policies not syncing to Trino
 
-**Note:** In the current implementation, Trino uses file-based access control (`trino/etc/rules.json`), not the Ranger plugin. Ranger policies are visible in the UI and logged to the audit trail but do not enforce per-query at the Trino level. See [`prod-improvements.md`](prod-improvements.md#3-ranger-policy-sync) for the full Ranger-Trino plugin implementation.
+**Symptom:** Policy change in Ranger UI not reflected in query behaviour after 30 seconds.
+
+```bash
+docker logs datawave-ranger-sync 2>&1 | tail -10
+docker exec datawave-trino cat /etc/ranger-sync/rules.json
+```
+
+If `rules.json` is stale, check ranger-sync can reach Ranger:
+
+```bash
+docker exec datawave-ranger-sync wget -qO- http://ranger:6080/login.jsp | grep -c "Ranger"
+```
+
+---
+
+### Users not appearing in Ranger after LDAP change
+
+**Cause:** `ranger-usersync` polls every 60 seconds. Wait up to 60s, then check:
+
+```bash
+docker logs datawave-ranger-usersync 2>&1 | tail -10
+```
+
+> Note: `ranger-usersync` only upserts — it does not remove users deleted from LDAP. Remove manually in Ranger UI under **Settings → Users/Groups**.
 
 ---
 
 ## Elasticsearch / Kibana Issues
 
-### Kibana shows 502 / blank login page
+### Kibana shows no data / "No available fields"
 
-**Fix:**
+**Cause 1:** No queries have been run through Trino yet — the `trino-query-audit` index is empty.
 
-```bash
-docker compose up -d es-init kibana
-docker exec datawave-nginx nginx -s reload
-```
+**Fix:** Run any query in Superset SQL Lab, then refresh Kibana Discover.
 
-If Kibana is still not accessible:
+**Cause 2:** Kibana time range filter excludes the data.
 
-```bash
-docker compose logs -f kibana
-# Check it is connecting to elasticsearch:9200
-```
+**Fix:** In Kibana Discover, click the time picker and select **Last 24 hours** or **Last 7 days**.
 
 ---
 
-### No data in `trino-query-audit` index
+### `trino-query-audit` data view missing in Kibana
 
-**Cause 1:** No queries have been run through Trino yet.
-
-**Cause 2:** The event listener failed to authenticate to Elasticsearch.
-
-**Fix:**
+**Cause:** `kibana-init` may not have completed successfully.
 
 ```bash
-docker compose logs trino | grep -i "event listener\|elasticsearch\|error"
+docker logs datawave-kibana-init 2>&1
 ```
 
-If the listener cannot reach Elasticsearch, restart Trino after confirming Elasticsearch is healthy:
+Re-run it:
 
 ```bash
-docker compose ps elasticsearch
-docker compose restart trino
+docker compose up kibana-init
 ```
 
 ---
@@ -283,8 +285,6 @@ docker compose restart trino
 ### Elasticsearch returns 503
 
 **Cause:** Elasticsearch is still starting (it has a 60-second start period).
-
-**Fix:**
 
 ```bash
 docker compose logs -f elasticsearch
@@ -299,9 +299,7 @@ If it never becomes healthy, check memory — Elasticsearch needs at least 1 GB 
 
 ### MinIO bucket init fails
 
-**Symptom:** Iceberg queries fail with "bucket not found" or "no such object".
-
-**Fix:**
+**Symptom:** MinIO Console shows no buckets, or Iceberg queries fail with "bucket not found".
 
 ```bash
 docker compose restart minio-init
@@ -312,16 +310,17 @@ docker compose logs -f minio-init
 
 ### Iceberg queries return "table not found"
 
-**Cause:** The Iceberg table has not been created yet (Iceberg tables are created on demand by engineers, not pre-seeded).
+**Cause:** Iceberg tables are not pre-seeded — they must be created explicitly.
 
-**Fix:** Use the engineer connection in Metabase to run:
+**Fix:** In Superset SQL Lab as `admin` or `engineer`:
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS iceberg.datawarehouse
-WITH (location = 's3://warehouse/datawarehouse/')
-```
+WITH (location = 's3://warehouse/datawarehouse/');
 
-Then create the table. See the RBAC walkthrough in [`user-guide.md`](user-guide.md#2d-write-to-the-iceberg-data-lake).
+CREATE TABLE iceberg.datawarehouse.my_table (...)
+WITH (format = 'PARQUET');
+```
 
 ---
 
@@ -329,15 +328,14 @@ Then create the table. See the RBAC walkthrough in [`user-guide.md`](user-guide.
 
 ```bash
 docker compose logs -f nessie
-# Check for: "Quarkus ... started in"
 curl http://localhost:19120/api/v2/config
 ```
 
-If Nessie is not responding, restart it:
+If Nessie is not responding:
 
 ```bash
 docker compose restart nessie
-docker compose restart trino   # Trino needs to reconnect
+docker compose restart trino
 ```
 
 ---
@@ -346,36 +344,33 @@ docker compose restart trino   # Trino needs to reconnect
 
 ### Login redirects loop back to the login page
 
-**Cause 1:** The oauth2-proxy cookie secret changed (e.g., after a restart with a different `secrets/oauth2_cookie_secret.txt`). Old cookies are invalid.
+**Cause:** Stale browser cookies or OIDC session mismatch.
 
 **Fix:** Clear browser cookies for `localhost` and log in again.
-
-**Cause 2:** `KC_HOSTNAME` or redirect URI mismatch.
-
-**Fix:**
-
-```bash
-docker compose logs -f oauth2-proxy
-# Look for: "error redeeming code" or "invalid redirect URI"
-```
-
-Confirm the redirect URI in the `datawave-app` Keycloak client matches `http://localhost/oauth2/callback`.
 
 ---
 
 ### Keycloak realm is missing after restart
 
-**Cause:** The `keycloak_db_data` volume exists from a previous run but the realm JSON was already imported. Keycloak skips re-import if the realm exists.
+**Cause:** Keycloak uses an embedded H2 database (`start-dev` mode). If the `keycloak_data` volume was deleted, the realm is re-imported automatically on next boot.
 
-If the realm is missing (shouldn't happen normally):
+If the realm is genuinely missing:
 
 ```bash
 docker compose down
-docker volume rm datawave-sql-federation_keycloak_db_data
-docker compose up -d keycloak-db keycloak
+docker volume rm datawave-sql-federation_keycloak_data
+docker compose up -d keycloak
 ```
 
 This wipes all manual Keycloak UI changes. Export the realm first if needed (see [`prod-improvements.md`](prod-improvements.md#8-keycloak-realm-export)).
+
+---
+
+### LDAP users not appearing in Keycloak
+
+**Cause:** Keycloak syncs from OpenLDAP every 5 minutes by default.
+
+**Fix:** Force an immediate sync in Keycloak Admin → **User Federation → ldap → Synchronize all users**.
 
 ---
 
@@ -385,10 +380,10 @@ Destroys all data volumes and starts completely fresh:
 
 ```bash
 docker compose down -v
-docker compose up -d
+docker compose up --build -d
 ```
 
-This takes the full 6–8 minutes on first boot because Ranger re-initialises its database from scratch.
+Allow 7–10 minutes on first boot — Ranger re-initialises its database from scratch.
 
 ---
 
@@ -400,12 +395,10 @@ This takes the full 6–8 minutes on first boot because Ranger re-initialises it
 | PostgreSQL | `15` | Major version only |
 | MySQL | `8.0` | Major version only |
 | Keycloak | `24.0` | Pinned — realm JSON format changes between majors |
-| OAuth2 Proxy | `v7.6.0-alpine` | Pinned — flag names changed in v7 |
 | Elasticsearch | `8.13.0` | Pinned — must match Kibana exactly |
 | Kibana | `8.13.0` | Pinned — must match Elasticsearch exactly |
 | Apache Ranger | `2.8.0` | Pinned |
-| Apache Ranger Solr | `2.8.0` | Pinned — paired with Ranger |
+| Apache Ranger Solr | `2.8.0` | Pinned — must match Ranger |
+| Apache Superset | `3.1.0` | Pinned — `superset_config.py` API changes between versions |
 | Nessie | `latest` | REST catalog API is stable |
 | MinIO / mc | `latest` | S3-compatible API is stable |
-| Metabase | `latest` | Internal DB schema migrates automatically |
-| Nginx | `latest` | Config syntax is stable |
